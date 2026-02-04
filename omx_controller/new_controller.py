@@ -19,7 +19,7 @@ from trajectory_msgs.msg import JointTrajectory
 from trajectory_msgs.msg import JointTrajectoryPoint
 
 # ===== Component Lib =====
-from controller.models.BC.bc_model import BCPolicy
+from omx_controller.models.BC.bc_model import BCPolicy
 
 class NewController(Node):
 
@@ -74,7 +74,7 @@ class NewController(Node):
 
         # ===== Model ======
         self.model = BCPolicy(state_dim=6, action_dim=6)
-        self.model.load_state_dict(torch.load("src/OMX-Controller/OMX-Controller/models/BC/bc_model.pth", weights_only=True))
+        self.model.load_state_dict(torch.load("src/omx_controller/omx_controller/models/BC/bc_model.pth", weights_only=True))
         self.model.eval()
 
     def joint_state_callback(self, msg):

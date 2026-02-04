@@ -20,7 +20,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'controller = omx_controller.controller:main'
+            'controller = omx_controller.controller:main',
+            'new_controller = omx_controller.new_controller:main'
         ],
     },
 )

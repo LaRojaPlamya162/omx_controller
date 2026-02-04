@@ -87,6 +87,6 @@ if __name__ == '__main__':
         print(f"Epoch {epoch+1:3d} | Loss: {total_loss/len(dataloader):.6f}")
     
     print("Training finised")
-    torch.save(model.state_dict(), 'OMX-Controller/models/BC/bc_model.pth')
+    torch.save(model.state_dict(), 'omx_controller/models/BC/bc_model_v2.pth')
     #torch.save(model.state_dict(), 'bc_model.pth')
     print("Model loaded!")
