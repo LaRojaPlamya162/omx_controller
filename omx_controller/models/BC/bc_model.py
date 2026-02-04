@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import torch.distributions as D
+import os
 
 LOG_STD_MIN = -5
 LOG_STD_MAX = 2
@@ -51,7 +52,15 @@ def bc_nll_loss(dist, actions):
     log_prob = dist.log_prob(actions)
     return -log_prob.sum(dim=-1).mean()
 if __name__ == '__main__':
-    dataset = load_dataset("RobotisSW/omx_Move", split = "train")
+    BASE_PATH = "/root/ros2_ws/src/physical_ai_tools/docker/huggingface/lerobot/LearnDLFromScratch/omx_f_PickUp/data/chunk-000"
+
+    data_files = [
+    os.path.join(BASE_PATH, f"episode_{i:06d}.parquet")
+    for i in range(15)
+]
+
+    dataset = load_dataset("parquet", data_files=data_files,split="train")
+    #dataset = load_dataset("RobotisSW/omx_Move", split = "train")
     dataset = dataset.with_format("torch")
     #dataset = dataset.map(cut_back_attribute, fn_kwargs = {"col_name" : "action", "n" : 6})
     #dataset = dataset.map(cut_back_attribute, fn_kwargs = {"col_name" : "observation.state", "n" : 6})
@@ -87,6 +96,6 @@ if __name__ == '__main__':
         print(f"Epoch {epoch+1:3d} | Loss: {total_loss/len(dataloader):.6f}")
     
     print("Training finised")
-    torch.save(model.state_dict(), 'omx_controller/models/BC/bc_model_v2.pth')
+    torch.save(model.state_dict(), 'omx_controller/models/BC/bc_model_v3.pth')
     #torch.save(model.state_dict(), 'bc_model.pth')
     print("Model loaded!")

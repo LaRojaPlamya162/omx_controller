@@ -8,6 +8,7 @@ import threading
 import time
 import tty
 import torch
+import csv
 
 # ===== ROS2 Lib =====
 from control_msgs.action import GripperCommand
@@ -21,7 +22,7 @@ from trajectory_msgs.msg import JointTrajectoryPoint
 # ===== Component Lib =====
 from omx_controller.models.BC.bc_model import BCPolicy
 
-class NewController(Node):
+class Controller(Node):
 
     def __init__(self):
         super().__init__('keyboard_controller')
@@ -65,7 +66,12 @@ class NewController(Node):
 
         self.get_logger().info('Waiting for /joint_states...')
         self.rate = self.create_rate(20)  # 20 Hz, equivalent to 0.05s timer
+        #self.timer = self.create_timer(0.05, self.control_step)
 
+        # Time variables
+        self.last_gripper_send_time = 0.0
+        self.gripper_send_interval = 0.2
+        
         # Logging throttle variables (log every 1 second for each type)
         self.last_joint_log_time = 0.0
         self.last_arm_log_time = 0.0
@@ -74,9 +80,24 @@ class NewController(Node):
 
         # ===== Model ======
         self.model = BCPolicy(state_dim=6, action_dim=6)
-        self.model.load_state_dict(torch.load("src/omx_controller/omx_controller/models/BC/bc_model.pth", weights_only=True))
+        #self.model.load_state_dict(torch.load('omx_controller/models/BC/bc_model_v2.pth'))
+        self.model.load_state_dict(torch.load("src/omx_controller/omx_controller/models/BC/bc_model_v2.pth", weights_only=True))
         self.model.eval()
 
+        # ===== Control / Logging variables =====
+        self.timestep = 0
+        self.prev_arm_positions = None
+        self.prev_gripper_position = None
+
+        # CSV logging
+        self.csv_file = open("src/omx_controller/omx_controller/models/BC/bc_log.csv", "w", newline="")
+        self.writer = csv.writer(self.csv_file)   # ← fixed
+        self.writer.writerow([
+            "timestep",
+            "s1", "s2", "s3", "s4", "s5", "g_s",
+            "n_s1", "n_s2", "n_s3", "n_s4", "n_s5", "n_g_s",
+            "a1", "a2", "a3", "a4", "a5", "g_a"
+        ])
     def joint_state_callback(self, msg):
         if set(self.arm_joint_names).issubset(set(msg.name)):
             for i, joint in enumerate(self.arm_joint_names):
@@ -114,68 +135,101 @@ class NewController(Node):
             self.last_arm_log_time = current_time
 
     def send_gripper_command(self):
-        goal_msg = GripperCommand.Goal()
-        goal_msg.command.position = self.gripper_position
-        goal_msg.command.max_effort = 10.0
+            current_time = time.time()
 
-        # Throttled logging
-        current_time = time.time()
-        if current_time - self.last_gripper_log_time >= self.log_interval:
-            self.get_logger().info(f'Sending gripper command: {goal_msg.command.position}')
-            self.last_gripper_log_time = current_time
+            if current_time - self.last_gripper_send_time < self.gripper_send_interval:
+                return
 
-        if not self.gripper_client.wait_for_server(timeout_sec=1.0):
-            self.get_logger().error('Gripper action server not available')
-            return
-        send_goal_future = self.gripper_client.send_goal_async(goal_msg)
-        send_goal_future.add_done_callback(self.gripper_goal_response_callback)
+            self.last_gripper_send_time = current_time
+
+            goal_msg = GripperCommand.Goal()
+            goal_msg.command.position = self.gripper_position
+            goal_msg.command.max_effort = 10.0
+
+            # Throttled logging
+            if current_time - self.last_gripper_log_time >= self.log_interval:
+                self.get_logger().info(f'Sending gripper command: {goal_msg.command.position:.4f}')
+                self.last_gripper_log_time = current_time
+
+            if not self.gripper_client.wait_for_server(timeout_sec=0.5):
+                self.get_logger().warn('Gripper action server not available')
+                return
+
+            send_goal_future = self.gripper_client.send_goal_async(goal_msg)
+            send_goal_future.add_done_callback(self.gripper_goal_response_callback)
 
     def gripper_goal_response_callback(self, future):
-        goal_handle = future.result()
+        """goal_handle = future.result()
         if not goal_handle.accepted:
             self.get_logger().info('Gripper goal rejected')
             return
         self.get_logger().info('Gripper goal accepted')
         get_result_future = goal_handle.get_result_async()
-        get_result_future.add_done_callback(self.gripper_get_result_callback)
+        get_result_future.add_done_callback(self.gripper_get_result_callback)"""
+        pass
 
     def gripper_get_result_callback(self, future):
-        result = future.result().result
-        self.get_logger().info(f'Gripper result: {result.reached_goal}')
+        """result = future.result().result
+        self.get_logger().info(f'Gripper result: {result.reached_goal}')"""
 
     def run(self):
         while not self.joint_received and rclpy.ok() and self.running:
             self.get_logger().info('Waiting for initial joint states...')
-            time.sleep(1.0)  # No spin_once needed here since spin is in main
+            time.sleep(1.0)
 
         self.get_logger().info('Ready to run model control!')
 
-        try:
-            while rclpy.ok() and self.running:
-                if not self.joint_received:
-                    continue
+        # Initialize previous state once we have first reading
+        self.prev_arm_positions = self.arm_joint_positions.copy()
+        self.prev_gripper_position = self.gripper_position
 
-                state = self.arm_joint_positions + [self.gripper_position]
+        while rclpy.ok() and self.running:
+            if not self.joint_received:
+                continue
 
-                state_t = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
+            # Current state
+            current_state = self.arm_joint_positions + [self.gripper_position]
+            state_tensor = torch.tensor(current_state, dtype=torch.float32).unsqueeze(0)
 
-                with torch.no_grad():
-                    action_t = self.model.act(state_t, deterministic=True)
+            with torch.no_grad():
+                action_tensor = self.model.act(state_tensor, deterministic=True)
 
-                moves = action_t.squeeze(0).cpu().numpy()
-                self.arm_joint_positions = list(moves[:5])
-                self.gripper_position = float(moves[5])
-                self.send_arm_command()
-                self.send_gripper_command()
+            action = action_tensor.squeeze(0).cpu().numpy()
+            desired_arm = action[:5].tolist()
+            desired_gripper = float(action[5])
 
-                self.rate.sleep()
+            # Log to CSV (previous state → current state → action)
+            row = (
+                [self.timestep] +
+                self.prev_arm_positions +
+                [self.prev_gripper_position] +
+                self.arm_joint_positions +
+                [self.gripper_position] +
+                desired_arm +
+                [desired_gripper]
+            )
+            self.writer.writerow(row)
+            self.csv_file.flush()  # make sure data is written
 
-        except Exception as e:
-            self.get_logger().error(f'Exception in run loop: {e}')
+            # Update targets
+            self.arm_joint_positions = desired_arm
+            self.gripper_position = desired_gripper
+
+            # Send commands
+            self.send_arm_command()
+            self.send_gripper_command()
+
+            # Save current as previous for next step
+            self.prev_arm_positions = self.arm_joint_positions.copy()
+            self.prev_gripper_position = self.gripper_position
+
+            self.timestep += 1
+
+            self.rate.sleep()
 
 def main():
     rclpy.init()
-    node = NewController()
+    node = Controller()
 
     control_thread = threading.Thread(target=node.run)
     control_thread.start()
@@ -187,6 +241,12 @@ def main():
     finally:
         node.running = False
         control_thread.join()
+        
+        # Close CSV file
+        if hasattr(node, 'csv_file'):
+            node.csv_file.close()
+            print("CSV log file closed.")
+            
         node.destroy_node()
         rclpy.shutdown()
 
