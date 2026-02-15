@@ -1,26 +1,25 @@
 #!/usr/bin/env python3
 
 # ===== System Lib =====
-import select
 import sys
-import termios
-import threading
 import time
-import tty
 import torch
 import csv
-
+import os
 # ===== ROS2 Lib =====
 from control_msgs.action import GripperCommand
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Pose
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory
 from trajectory_msgs.msg import JointTrajectoryPoint
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from ros_gz_interfaces.srv import SetEntityPose
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
+from ros_gz_interfaces.srv import DeleteEntity, SpawnEntity
+from ros_gz_interfaces.msg import Entity
+from rclpy.duration import Duration
+from rclpy.executors import MultiThreadedExecutor
 # ===== Component Lib =====
 from omx_controller.models.BC.bc_model import BCPolicy
 
@@ -28,11 +27,14 @@ class Controller(Node):
 
     def __init__(self):
         super().__init__('keyboard_controller')
-        qos_profile = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10
+
+        # QoS profile for reliable subscriptions
+        qos = QoSProfile(
+            depth=10,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            history=QoSHistoryPolicy.KEEP_LAST
         )
+
         # Publisher for arm joint control
         self.arm_publisher = self.create_publisher(
             JointTrajectory, '/arm_controller/joint_trajectory', 10
@@ -47,21 +49,42 @@ class Controller(Node):
         self.subscription = self.create_subscription(
             JointState, '/joint_states', self.joint_state_callback, 10
         )
+
         # Subscriber to get ball pose
         self.ball_sub = self.create_subscription(
-            PoseStamped,
-            '/model/cricket_ball/pose',
+            Pose,
+            '/cricket_ball/pose',
             self.ball_callback,
-            qos_profile
+            qos
         )
-        # Client to reset pose
-        self.reset_client = self.create_client(SetEntityPose, '/world/default/set_pose')
-        '''while not self.reset_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('Waiting for set_pose service...')'''
 
+        # Clients for spawn and delete services
+        self.spawn_client = self.create_client(SpawnEntity, '/world/empty/create')
+        self.delete_client = self.create_client(DeleteEntity, '/world/empty/remove')
+
+        # Wait for services with retry
+        max_attempts = 30
+        attempt = 0
+        while attempt < max_attempts and rclpy.ok():
+            spawn_ready = self.spawn_client.wait_for_service(timeout_sec=10.0)
+            delete_ready = self.delete_client.wait_for_service(timeout_sec=10.0)
+            if spawn_ready and delete_ready:
+                self.get_logger().info('Services /world/empty/create and /world/empty/remove are available.')
+                break
+            attempt += 1
+            self.get_logger().warn(f'Services not available yet (attempt {attempt}/{max_attempts}) - spawn: {spawn_ready}, delete: {delete_ready}. Retrying in 5 seconds...')
+            time.sleep(5.0)
+        if attempt == max_attempts:
+            self.get_logger().error('Services not available after max attempts. Node may not function properly.')
+
+        # Wait for gripper action server
+        while not self.gripper_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().warn('Waiting for gripper action server...')
+            time.sleep(1.0)
+
+        # Initial states
         self.initial_arm_positions = [0.0] * 5
         self.initial_gripper_position = 0.0
-
         self.arm_joint_positions = [0.0] * 5
         self.arm_joint_names = [
             'joint1',
@@ -70,58 +93,71 @@ class Controller(Node):
             'joint4',
             'joint5',
         ]
-
         self.gripper_position = 0.0
         self.gripper_max = 1.1
         self.gripper_min = 0.0
-
+        self.initial_ball_pose = [0.0, 2.0, 1.0]  # Consistent with spawn position
         self.joint_received = False
+        self.initial_omx_pose = None
+        self.ball_pos = [0.0, 0.0, 0.0]  # Default ball position
 
+        # Control parameters
         self.max_delta = 0.02
         self.gripper_delta = 0.1
         self.last_command_time = time.time()
         self.command_interval = 0.02
 
-        self.running = True  # for thread loop control
-
-        self.get_logger().info('Waiting for /joint_states...')
-        self.rate = self.create_rate(20)  # 20 Hz, equivalent to 0.05s timer
-        #self.timer = self.create_timer(0.05, self.control_step)
-
-        # Time variables
+        # Gripper send throttling
         self.last_gripper_send_time = 0.0
         self.gripper_send_interval = 0.2
-        
-        # Logging throttle variables (log every 1 second for each type)
+
+        # Logging throttle (every 1 second)
         self.last_joint_log_time = 0.0
         self.last_arm_log_time = 0.0
         self.last_gripper_log_time = 0.0
-        self.log_interval = 1.0  # Adjust this to control logging speed (in seconds)
+        self.last_ball_log_time = 0.0
+        self.log_interval = 1.0
 
-        # ===== Model ======
+        # Model setup
         self.model = BCPolicy(state_dim=6, action_dim=6)
-        #self.model.load_state_dict(torch.load('omx_controller/models/BC/bc_model_v2.pth'))
         self.model.load_state_dict(torch.load("src/omx_controller/omx_controller/models/BC/bc_model.pth", weights_only=True))
         self.model.eval()
 
-        # ===== Control / Logging variables =====
+        # Control / Logging variables
         self.timestep = 0
         self.prev_arm_positions = None
         self.prev_gripper_position = None
+        self.last_action_arm = None
+        self.last_action_gripper = None
         self.resetting = False
         self.new_episode_ready = True
-        self.ball_pos = None
         self.episode = 0
-        self.initial_omx_pose = None
-        # ===== CSV logging =====
+        self.reset_state = 'none'
+        self.ball_reset_in_progress = False
+        self.tolerance = 0.01  # Tolerance for pose comparison
+
+        # CSV logging
         self.csv_file = open("src/omx_controller/omx_controller/models/BC/bc_log.csv", "w", newline="")
-        self.writer = csv.writer(self.csv_file)   # ← fixed
+        self.writer = csv.writer(self.csv_file)
         self.writer.writerow([
-            'episode',"timestep",
-            "s1", "s2", "s3", "s4", "s5", "g_s",
-            "n_s1", "n_s2", "n_s3", "n_s4", "n_s5", "n_g_s",
-            "a1", "a2", "a3", "a4", "a5", "g_a"
+            'episode', 'timestep',
+            's1', 's2', 's3', 's4', 's5', 'g_s',
+            'n_s1', 'n_s2', 'n_s3', 'n_s4', 'n_s5', 'n_g_s',
+            'a1', 'a2', 'a3', 'a4', 'a5', 'g_a'
         ])
+
+        # Create timer for control loop (20 Hz)
+        self.control_timer = self.create_timer(0.05, self.control_step)
+
+    def is_pose_near_initial(self):
+        if self.initial_omx_pose is None:
+            return False
+        initial_arm = self.initial_omx_pose[:5]
+        initial_gripper = self.initial_omx_pose[5]
+        arm_close = all(abs(a - b) < self.tolerance for a, b in zip(self.arm_joint_positions, initial_arm))
+        gripper_close = abs(self.gripper_position - initial_gripper) < self.tolerance
+        return arm_close and gripper_close
+
     def joint_state_callback(self, msg):
         if set(self.arm_joint_names).issubset(set(msg.name)):
             for i, joint in enumerate(self.arm_joint_names):
@@ -133,7 +169,7 @@ class Controller(Node):
             self.gripper_position = msg.position[index]
 
         self.joint_received = True
-        self.is_resetting = False
+
         # Throttled logging
         current_time = time.time()
         if current_time - self.last_joint_log_time >= self.log_interval:
@@ -142,37 +178,24 @@ class Controller(Node):
                 f'Gripper: {self.gripper_position}'
             )
             self.last_joint_log_time = current_time
-    def ball_callback(self, msg: PoseStamped):
-        # Callback to handle received pose (e.g., log or process it)
-        self.get_logger().info(f'Cricket ball pose: position={msg.pose.position}, orientation={msg.pose.orientation}')
-        pos = msg.pose.position
-        x, y, z  = pos.x, pos.y, pos.z
-        self.ball_pos = [x,y,z]
-    def reset_pose(self, x=0.0, y=0.0, z=1.0, roll=0.0, pitch=0.0, yaw=0.0):
-        # Call service to reset pose
-        req = SetEntityPose.Request()
-        req.entity.name = 'cricket_ball'
-        req.pose.position.x = x
-        req.pose.position.y = y
-        req.pose.position.z = z
-        req.pose.orientation.x = roll
-        req.pose.orientation.y = pitch
-        req.pose.orientation.z = yaw
-        req.pose.orientation.w = 1.0  # Assuming no rotation; adjust quaternion as needed
 
-        future = self.reset_client.call_async(req)
-        rclpy.spin_until_future_complete(self, future)
-        if future.result() is not None:
-            self.get_logger().info('Pose reset successful')
-        else:
-            self.get_logger().error('Pose reset failed')
+    def ball_callback(self, msg):
+        pos = msg.position
+        x, y, z = pos.x, pos.y, pos.z
+        self.ball_pos = [x, y, z]
+
+        # Throttled logging
+        current_time = time.time()
+        if current_time - self.last_ball_log_time >= self.log_interval:
+            self.get_logger().info(f"Ball position: {x:.3f}, {y:.3f}, {z:.3f}")
+            self.last_ball_log_time = current_time
+
     def send_arm_command(self, arm_pos):
         arm_msg = JointTrajectory()
         arm_msg.joint_names = self.arm_joint_names
         arm_point = JointTrajectoryPoint()
         arm_point.positions = arm_pos
-        arm_point.time_from_start.sec = 0
-        arm_point.time_from_start.nanosec = 50000000
+        arm_point.time_from_start = Duration(seconds=0, nanoseconds=50000000).to_msg()
         arm_msg.points.append(arm_point)
         self.arm_publisher.publish(arm_msg)
 
@@ -183,145 +206,191 @@ class Controller(Node):
             self.last_arm_log_time = current_time
 
     def send_gripper_command(self, gripper_pos):
-            current_time = time.time()
+        current_time = time.time()
+        if current_time - self.last_gripper_send_time < self.gripper_send_interval:
+            return
 
-            if current_time - self.last_gripper_send_time < self.gripper_send_interval:
-                return
+        self.last_gripper_send_time = current_time
 
-            self.last_gripper_send_time = current_time
+        goal_msg = GripperCommand.Goal()
+        goal_msg.command.position = gripper_pos
+        goal_msg.command.max_effort = 10.0
 
-            goal_msg = GripperCommand.Goal()
-            goal_msg.command.position = gripper_pos
-            goal_msg.command.max_effort = 10.0
+        if not self.gripper_client.wait_for_server(timeout_sec=0.5):
+            self.get_logger().warn('Gripper action server not available')
+            return
 
-            # Throttled logging
-            if current_time - self.last_gripper_log_time >= self.log_interval:
-                self.get_logger().info(f'Sending gripper command: {gripper_pos}')
-                self.last_gripper_log_time = current_time
+        self.gripper_client.send_goal_async(goal_msg)
 
-            if not self.gripper_client.wait_for_server(timeout_sec=0.5):
-                self.get_logger().warn('Gripper action server not available')
-                return
+    def control_step(self):
+        if not self.joint_received:
+            return
 
-            #send_goal_future = self.gripper_client.send_goal_async(goal_msg)
-            #send_goal_future.add_done_callback(self.gripper_goal_response_callback)
+        if self.initial_omx_pose is None:
+            self.initial_omx_pose = self.arm_joint_positions + [self.gripper_position]
+            self.get_logger().info("Initial OMX pose captured!")
 
-    def run(self):
+        # ===== RESET STATE MACHINE =====
+        if self.reset_state == 'reset_robot':
+            self.reset_omx_pose()
+            if self.is_pose_near_initial():
+                self.get_logger().info("Robot reset done")
+                self.reset_state = 'reset_ball'
+            return
 
-        self.get_logger().info('Ready to run model control!')
+        elif self.reset_state == 'reset_ball':
+            if not self.ball_reset_in_progress:
+                self.ball_reset_in_progress = True
+                self.reset_ball()
+            return
 
-        # Wait until first joint state received
-        while rclpy.ok() and not self.joint_received:
-            time.sleep(0.1)
-        if self.prev_arm_positions is None and self.prev_gripper_position is None:
-            self.prev_arm_positions = self.arm_joint_positions.copy()
-            self.prev_gripper_position = self.gripper_position
-            if self.initial_omx_pose is None:
-                self.initial_omx_pose = self.arm_joint_positions + [self.gripper_position]
-                self.get_logger().info("Initial OMX pose captured!")
-            current_state = self.arm_joint_positions + [self.gripper_position]
-            state_tensor = torch.tensor(current_state, dtype=torch.float32).unsqueeze(0)
+        if self.resetting or not self.new_episode_ready:
+            return
 
-            with torch.no_grad():
-                action_tensor = self.model.act(state_tensor, deterministic=True)
+        # ===== MODEL CONTROL =====
+        current_state_list = self.arm_joint_positions + [self.gripper_position]
 
-            action = action_tensor.squeeze(0).cpu().numpy()
-            self.arm_joint_positions = action[:5].tolist()
-            self.gripper_position = float(action[5])
-            self.send_arm_command(self.arm_joint_positions)
-            self.send_gripper_command(self.gripper_position)
-
-        while rclpy.ok() and self.running:
-            #if self.resetting or not self.new_episode_ready:
-                #continue
-            #if self.ball_pos is None:
-                #continue
-            # ===== MODEL CONTROL =====
-            current_state = self.arm_joint_positions + [self.gripper_position]
-            state_tensor = torch.tensor(current_state, dtype=torch.float32).unsqueeze(0)
-
-            with torch.no_grad():
-                action_tensor = self.model.act(state_tensor, deterministic=True)
-
-            action = action_tensor.squeeze(0).cpu().numpy()
-            desired_arm = action[:5].tolist()
-            desired_gripper = float(action[5])
-
-            # ===== LOG CSV =====
-            self.episode = self.timestep // 1000
+        if self.last_action_arm is not None:
+            action_log = self.last_action_arm + [self.last_action_gripper]
             row = (
-                [self.episode] + 
+                [self.episode] +
                 [self.timestep] +
                 self.prev_arm_positions +
                 [self.prev_gripper_position] +
-                self.arm_joint_positions +
-                [self.gripper_position] +
-                desired_arm +
-                [desired_gripper]
+                current_state_list +
+                action_log
             )
             self.writer.writerow(row)
             if self.timestep % 50 == 0:
                 self.csv_file.flush()
 
-            # ===== APPLY ACTION =====
-            self.prev_arm_positions = self.arm_joint_positions.copy()
-            self.prev_gripper_position = self.gripper_position
-
-            self.arm_joint_positions = desired_arm
-            self.gripper_position = desired_gripper
-
-            self.send_arm_command(self.arm_joint_positions)
-            self.send_gripper_command(self.gripper_position)
-
             self.timestep += 1
-            if self.timestep % 1000 == 0:
-                self.get_logger().info(f"Episode {self.episode} done -> reset")
+            if self.timestep >= 1000:
+                self.get_logger().info("Episode done -> start reset")
+                self.reset_state = 'reset_robot'
                 self.resetting = True
                 self.new_episode_ready = False
-                self.reset_episode()
-                continue
-            self.rate.sleep()
+                self.episode += 1
+                self.timestep = 0
+                return
 
-    def reset_episode(self):
-        self.get_logger().info(f"Resetting episode {self.episode + 1}")
-        self.episode += 1
-        self.new_episode_ready = False
-        self.reset_omx_pose()
-        #self.reset_ball_pose()
+        state_tensor = torch.tensor(current_state_list, dtype=torch.float32).unsqueeze(0)
+
+        with torch.no_grad():
+            action_tensor = self.model.act(state_tensor, deterministic=True)
+
+        action = action_tensor.squeeze(0).cpu().numpy()
+        self.last_action_arm = action[:5].tolist()
+        self.last_action_gripper = float(action[5])
+
+        self.send_arm_command(self.last_action_arm)
+        self.send_gripper_command(self.last_action_gripper)
+
+        self.prev_arm_positions = self.arm_joint_positions.copy()
+        self.prev_gripper_position = self.gripper_position
 
     def reset_omx_pose(self):
         if self.initial_omx_pose is None:
             return
+
         arm_pos = self.initial_omx_pose[:5]
         gripper_pos = float(self.initial_omx_pose[5])
+
         self.send_arm_command(arm_pos)
         self.send_gripper_command(gripper_pos)
-        self.new_episode_ready = False      
-        self.new_episode_ready = True
+
+    def reset_ball(self):
+        self.get_logger().info("Deleting ball...")
+
+        delete_req = DeleteEntity.Request()
+        delete_req.entity = Entity()
+        delete_req.entity.name = 'cricket_ball'
+        delete_req.entity.type = 2  # EntityType.MODEL
+
+        future = self.delete_client.call_async(delete_req)
+        future.add_done_callback(self.delete_done_callback)
+
+    def delete_done_callback(self, future):
+        try:
+            result = future.result()
+            if result is None:
+                self.get_logger().error("Delete returned None")
+                return
+
+            if result.success:
+                self.get_logger().info("Delete success")
+            else:
+                self.get_logger().warn("Delete failed, spawning anyway")
+
+        except Exception as e:
+            self.get_logger().error(f"Delete exception: {e}")
+
+        self.spawn_ball()
+
+    def spawn_ball(self):
+        self.get_logger().info("Spawning ball...")
+
+        spawn_req = SpawnEntity.Request()
+        spawn_req.entity_factory.name = 'cricket_ball'
+        spawn_req.entity_factory.allow_renaming = False
+
+        model_path = os.path.expanduser(
+            '~/.gz/fuel/fuel.gazebosim.org/openrobotics/models/cricket%20ball/3/model.sdf'
+        )
+
+        with open(model_path) as f:
+            spawn_req.entity_factory.sdf = f.read()
+
+        spawn_req.entity_factory.pose.position.x = self.initial_ball_pose[0]
+        spawn_req.entity_factory.pose.position.y = self.initial_ball_pose[1]
+        spawn_req.entity_factory.pose.position.z = self.initial_ball_pose[2]
+
+        spawn_req.entity_factory.relative_to = "world"
+
+        future = self.spawn_client.call_async(spawn_req)
+        future.add_done_callback(self.spawn_done_callback)
+
+    def spawn_done_callback(self, future):
+        try:
+            result = future.result()
+            if result is None or not result.success:
+                self.get_logger().error("Spawn failed")
+                return
+
+            self.get_logger().info("Ball reset complete")
+
+        except Exception as e:
+            self.get_logger().error(f"Spawn exception: {e}")
+            return
+
+        # Resume training
+        self.last_action_arm = None
+        self.last_action_gripper = None
+        self.prev_arm_positions = self.arm_joint_positions.copy()
+        self.prev_gripper_position = self.gripper_position
+
+        self.reset_state = 'none'
         self.resetting = False
-        time.sleep(1.0)
-        return
-  
+        self.new_episode_ready = True
+        self.ball_reset_in_progress = False
+
 def main():
     rclpy.init()
     node = Controller()
 
-    control_thread = threading.Thread(target=node.run)
-    control_thread.start()
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
 
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         print('\nCtrl+C detected. Shutting down...')
     finally:
-        node.running = False
-        control_thread.join()
-        
         # Close CSV file
         if hasattr(node, 'csv_file'):
             node.csv_file.close()
             print("CSV log file closed.")
-            
+
         node.destroy_node()
         rclpy.shutdown()
 
