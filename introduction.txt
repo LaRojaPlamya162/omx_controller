@@ -1,2 +1,0 @@
-Initial ball pose: [0.4, 0.0, 0.0]
-Ball position log doesn't appear until ball pose change
