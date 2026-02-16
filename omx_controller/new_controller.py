@@ -99,7 +99,7 @@ class Controller(Node):
         self.initial_ball_pose = [0.0, 2.0, 1.0]  # Consistent with spawn position
         self.joint_received = False
         self.initial_omx_pose = None
-        self.ball_pos = [0.0, 0.0, 0.0]  # Default ball position
+        self.ball_pos = [0.4, 0.0, 0.0]  # Default ball position
 
         # Control parameters
         self.max_delta = 0.02
