@@ -6,6 +6,7 @@ import time
 import torch
 import csv
 import os
+import numpy as np
 # ===== ROS2 Lib =====
 from control_msgs.action import GripperCommand
 from geometry_msgs.msg import Pose
@@ -20,9 +21,10 @@ from ros_gz_interfaces.srv import DeleteEntity, SpawnEntity
 from ros_gz_interfaces.msg import Entity
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
+from tf2_ros import Buffer, TransformListener
 # ===== Component Lib =====
 from omx_controller.models.BC.bc_model import BCPolicy
-
+from omx_controller.components.reward import RewardFunction
 class Controller(Node):
 
     def __init__(self):
@@ -57,7 +59,9 @@ class Controller(Node):
             self.ball_callback,
             qos
         )
-
+        # TF buffer
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
         # Clients for spawn and delete services
         self.spawn_client = self.create_client(SpawnEntity, '/world/empty/create')
         self.delete_client = self.create_client(DeleteEntity, '/world/empty/remove')
@@ -96,11 +100,11 @@ class Controller(Node):
         self.gripper_position = 0.0
         self.gripper_max = 1.1
         self.gripper_min = 0.0
-        self.initial_ball_pose = [0.0, 2.0, 1.0]  # Consistent with spawn position
+        #self.initial_ball_pose = [0.0, 2.0, 1.0]  # Consistent with spawn position
         self.joint_received = False
         self.initial_omx_pose = None
-        self.ball_pos = [0.4, 0.0, 0.0]  # Default ball position
-
+        self.ball_pos = [0.2, 0.2, 0.0]  # Default ball position
+        self.joint_pos = None
         # Control parameters
         self.max_delta = 0.02
         self.gripper_delta = 0.1
@@ -124,7 +128,6 @@ class Controller(Node):
         self.model.eval()
 
         # Control / Logging variables
-        self.timestep = 0
         self.prev_arm_positions = None
         self.prev_gripper_position = None
         self.last_action_arm = None
@@ -132,9 +135,11 @@ class Controller(Node):
         self.resetting = False
         self.new_episode_ready = True
         self.episode = 0
+        self.timestep = 0
+        self.episode_step = 0
         self.reset_state = 'none'
         self.ball_reset_in_progress = False
-        self.tolerance = 0.01  # Tolerance for pose comparison
+        self.tolerance = 0.001  # Tolerance for pose comparison
 
         # CSV logging
         self.csv_file = open("src/omx_controller/omx_controller/models/BC/bc_log.csv", "w", newline="")
@@ -143,7 +148,10 @@ class Controller(Node):
             'episode', 'timestep',
             's1', 's2', 's3', 's4', 's5', 'g_s',
             'n_s1', 'n_s2', 'n_s3', 'n_s4', 'n_s5', 'n_g_s',
-            'a1', 'a2', 'a3', 'a4', 'a5', 'g_a'
+            'a1', 'a2', 'a3', 'a4', 'a5', 'g_a',
+            'jp_x', 'jp_y', 'jp_z',
+            'bp_x', 'bp_y', 'bp_z',
+            'reward', 'done'
         ])
 
         # Create timer for control loop (20 Hz)
@@ -246,10 +254,32 @@ class Controller(Node):
 
         if self.resetting or not self.new_episode_ready:
             return
-
+        try:
+            transform = self.tf_buffer.lookup_transform(
+            'world',                 # frame gốc
+            'end_effector_link',     # khớp cuối
+            rclpy.time.Time()
+            )
+            
+            ee_pos = [
+                transform.transform.translation.x,
+                transform.transform.translation.y,
+                transform.transform.translation.z
+            ]
+        except Exception:
+            ee_pos = [np.nan, np.nan, np.nan]
+        
+        self.joint_pos = ee_pos
         # ===== MODEL CONTROL =====
         current_state_list = self.arm_joint_positions + [self.gripper_position]
-
+        # ===== Reward =====
+        reward_fn = RewardFunction(
+            self.ball_pos,
+            self.joint_pos,
+            self.timestep
+        )
+        reward = reward_fn.reward
+        done = reward_fn.done
         if self.last_action_arm is not None:
             action_log = self.last_action_arm + [self.last_action_gripper]
             row = (
@@ -258,14 +288,19 @@ class Controller(Node):
                 self.prev_arm_positions +
                 [self.prev_gripper_position] +
                 current_state_list +
-                action_log
+                action_log +
+                self.joint_pos + 
+                self.ball_pos +
+                [reward] +
+                [done]
             )
             self.writer.writerow(row)
             if self.timestep % 50 == 0:
                 self.csv_file.flush()
 
             self.timestep += 1
-            if self.timestep >= 1000:
+            self.episode_step += 1
+            if self.timestep % 1000 == 0:
                 self.get_logger().info("Episode done -> start reset")
                 self.reset_state = 'reset_robot'
                 self.resetting = True
@@ -341,9 +376,9 @@ class Controller(Node):
         with open(model_path) as f:
             spawn_req.entity_factory.sdf = f.read()
 
-        spawn_req.entity_factory.pose.position.x = self.initial_ball_pose[0]
-        spawn_req.entity_factory.pose.position.y = self.initial_ball_pose[1]
-        spawn_req.entity_factory.pose.position.z = self.initial_ball_pose[2]
+        spawn_req.entity_factory.pose.position.x = self.ball_pos[0]
+        spawn_req.entity_factory.pose.position.y = self.ball_pos[1]
+        spawn_req.entity_factory.pose.position.z = self.ball_pos[2]
 
         spawn_req.entity_factory.relative_to = "world"
 
@@ -366,8 +401,10 @@ class Controller(Node):
         # Resume training
         self.last_action_arm = None
         self.last_action_gripper = None
-        self.prev_arm_positions = self.arm_joint_positions.copy()
-        self.prev_gripper_position = self.gripper_position
+        self.prev_arm_positions = self.initial_omx_pose[:5]
+        self.prev_gripper_position = self.initial_omx_pose[5]
+        #self.prev_arm_positions = self.arm_joint_positions.copy()
+        #self.prev_gripper_position = self.gripper_position
 
         self.reset_state = 'none'
         self.resetting = False
