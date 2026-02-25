@@ -7,6 +7,7 @@ import torch
 import csv
 import os
 import numpy as np
+
 # ===== ROS2 Lib =====
 from control_msgs.action import GripperCommand
 from geometry_msgs.msg import Pose
@@ -25,6 +26,9 @@ from tf2_ros import Buffer, TransformListener
 # ===== Component Lib =====
 from omx_controller.models.BC.bc_model import BCPolicy
 from omx_controller.components.reward import RewardFunction
+from omx_controller.models.SAC.network import Actor,Critic
+from omx_controller.models.SAC.sac_model import SACAgent
+from omx_controller.models.SAC.replay_buffer import ReplayBuffer
 class Controller(Node):
 
     def __init__(self):
@@ -127,6 +131,10 @@ class Controller(Node):
         self.model.load_state_dict(torch.load("src/omx_controller/omx_controller/models/BC/bc_model.pth", weights_only=True))
         self.model.eval()
 
+        self.agent = SACAgent(state_dim = 6, action_dim = 6)
+        if os.path.exists("src/omx_controller/omx_controller/models/SAC/SAC.pth"):
+            self.agent.load_checkpoint("src/omx_controller/omx_controller/models/SAC/SAC.pth")
+        self.replay = ReplayBuffer(capacity = 1000)
         # Control / Logging variables
         self.prev_arm_positions = None
         self.prev_gripper_position = None
@@ -142,7 +150,7 @@ class Controller(Node):
         self.tolerance = 0.001  # Tolerance for pose comparison
 
         # CSV logging
-        self.csv_file = open("src/omx_controller/omx_controller/models/BC/bc_log.csv", "w", newline="")
+        self.csv_file = open("src/omx_controller/omx_controller/models/SAC/sac_log.csv", "w", newline="")
         self.writer = csv.writer(self.csv_file)
         self.writer.writerow([
             'episode', 'timestep',
@@ -230,7 +238,7 @@ class Controller(Node):
 
         self.gripper_client.send_goal_async(goal_msg)
 
-    def control_step(self):
+    """def control_step(self):
         if not self.joint_received:
             return
 
@@ -300,7 +308,7 @@ class Controller(Node):
 
             self.timestep += 1
             self.episode_step += 1
-            if self.timestep % 1000 == 0:
+            if self.timestep % 2000 == 0:
                 self.get_logger().info("Episode done -> start reset")
                 self.reset_state = 'reset_robot'
                 self.resetting = True
@@ -310,9 +318,12 @@ class Controller(Node):
                 return
 
         state_tensor = torch.tensor(current_state_list, dtype=torch.float32).unsqueeze(0)
-
         with torch.no_grad():
-            action_tensor = self.model.act(state_tensor, deterministic=True)
+            action_tensor,_ = self.agent.actor(state_tensor)
+            #action_tensor = action_tensor.numpy()[0]
+        
+        '''with torch.no_grad():
+            action_tensor = self.model.act(state_tensor, deterministic=True)'''
 
         action = action_tensor.squeeze(0).cpu().numpy()
         self.last_action_arm = action[:5].tolist()
@@ -320,10 +331,147 @@ class Controller(Node):
 
         self.send_arm_command(self.last_action_arm)
         self.send_gripper_command(self.last_action_gripper)
+        
+        self.replay.push([self.prev_arm_positions + [self.prev_gripper_position]], action_log, reward, current_state_list, done) 
+        if len(self.replay_buffer) >= 1000:
+            self.agent.update(self.replay_buffer)
+            self.agent.save_checkpoint("src/omx_controller/models/SAC/SAC.pth")
+            self.replay_buffer = ReplayBuffer(capacity = 1000)
 
+        self.prev_arm_positions = self.arm_joint_positions.copy()
+        self.prev_gripper_position = self.gripper_position"""
+    def control_step(self):
+        if not self.joint_received:
+            return
+
+        if self.initial_omx_pose is None:
+            self.initial_omx_pose = self.arm_joint_positions + [self.gripper_position]
+            self.get_logger().info("Initial OMX pose captured!")
+
+        # ===== RESET STATE MACHINE =====
+        if self.reset_state == 'reset_robot':
+            self.reset_omx_pose()
+            if self.is_pose_near_initial():
+                self.get_logger().info("Robot reset done")
+                self.reset_state = 'reset_ball'
+            return
+
+        elif self.reset_state == 'reset_ball':
+            if not self.ball_reset_in_progress:
+                self.ball_reset_in_progress = True
+                self.reset_ball()
+            return
+
+        if self.resetting or not self.new_episode_ready:
+            return
+
+        # ===== TF =====
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                'world',
+                'end_effector_link',
+                rclpy.time.Time()
+            )
+
+            ee_pos = [
+                transform.transform.translation.x,
+                transform.transform.translation.y,
+                transform.transform.translation.z
+            ]
+        except Exception:
+            ee_pos = [np.nan, np.nan, np.nan]
+
+        self.joint_pos = ee_pos
+
+        # ===== CURRENT STATE =====
+        current_state_list = self.arm_joint_positions + [self.gripper_position]
+
+        # ===== REWARD =====
+        reward_fn = RewardFunction(
+            self.ball_pos,
+            self.joint_pos,
+            self.timestep
+        )
+        reward = reward_fn.reward
+        done = reward_fn.done
+
+        # =========================================================
+        # 🟢 LOG + REPLAY chỉ khi đã có prev state
+        # =========================================================
+        if self.prev_arm_positions is not None and self.last_action_arm is not None:
+
+            action_log = self.last_action_arm + [self.last_action_gripper]
+
+            row = (
+                [self.episode] +
+                [self.timestep] +
+                self.prev_arm_positions +
+                [self.prev_gripper_position] +
+                current_state_list +
+                action_log +
+                self.joint_pos +
+                self.ball_pos +
+                [reward] +
+                [done]
+            )
+
+            self.writer.writerow(row)
+
+            if self.timestep % 50 == 0:
+                self.csv_file.flush()
+
+            # Push replay safely
+            prev_state = self.prev_arm_positions + [self.prev_gripper_position]
+
+            self.replay.push(
+                prev_state,
+                action_log,
+                reward,
+                current_state_list,
+                done
+            )
+
+            self.timestep += 1
+            self.episode_step += 1
+
+            if self.timestep % 2000 == 0:
+                self.get_logger().info("Episode done -> start reset")
+                self.reset_state = 'reset_robot'
+                self.resetting = True
+                self.new_episode_ready = False
+                self.episode += 1
+                self.timestep = 0
+                return
+
+        # =========================================================
+        # 🟢 MODEL INFERENCE
+        # =========================================================
+        state_tensor = torch.tensor(current_state_list, dtype=torch.float32).unsqueeze(0)
+
+        with torch.no_grad():
+            action_tensor, _ = self.agent.actor(state_tensor)
+
+        action = action_tensor.squeeze(0).cpu().numpy()
+
+        self.last_action_arm = action[:5].tolist()
+        self.last_action_gripper = float(action[5])
+
+        self.send_arm_command(self.last_action_arm)
+        self.send_gripper_command(self.last_action_gripper)
+
+        # =========================================================
+        # 🟢 UPDATE PREV STATE
+        # =========================================================
         self.prev_arm_positions = self.arm_joint_positions.copy()
         self.prev_gripper_position = self.gripper_position
 
+        # =========================================================
+        # 🟢 TRAIN
+        # =========================================================
+        if len(self.replay) >= 1000:
+            self.agent.update(self.replay)
+            self.agent.save_checkpoint("src/omx_controller/omx_controller/models/SAC/SAC.pth")
+            self.replay = ReplayBuffer(capacity=1000)
     def reset_omx_pose(self):
         if self.initial_omx_pose is None:
             return

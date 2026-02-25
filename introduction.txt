@@ -1,2 +1,3 @@
-Initial ball pose: [0.4, 0.0, 0.0]
+Initial ball pose: [0.2, 0.2, 0.0]
 Ball position log doesn't appear until ball pose change
+Bounding box : [0.2, -0.2, 0] && 0.3 x 0.3

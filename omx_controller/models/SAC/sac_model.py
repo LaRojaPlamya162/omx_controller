@@ -1,4 +1,4 @@
-from controller.models.SAC.network import Actor, Critic
+from omx_controller.models.SAC.network import Actor, Critic
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
