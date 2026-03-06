@@ -1,5 +1,5 @@
 from setuptools import find_packages, setup
-
+import os
 package_name = 'omx_controller'
 
 setup(
@@ -10,6 +10,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'models', 'BC'), ['omx_controller/models/BC/bc_model.pth', 'omx_controller/models/SAC/SAC.pth'])
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -21,7 +22,8 @@ setup(
     entry_points={
         'console_scripts': [
             'controller = omx_controller.controller:main',
-            'new_controller = omx_controller.new_controller:main'
+            'new_controller = omx_controller.new_controller:main',
+            'other_controller = omx_controller.other_controller:main'
         ],
     },
 )
