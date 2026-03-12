@@ -121,7 +121,7 @@ class Controller(Node):
 
         # Gripper send throttling
         self.last_gripper_send_time = 0.0
-        self.gripper_send_interval = 0.2
+        self.gripper_send_interval = 0.05
 
         # Logging throttle (every 1 second)
         self.last_joint_log_time = 0.0
@@ -130,23 +130,28 @@ class Controller(Node):
         self.last_ball_log_time = 0.0
         self.log_interval = 1.0
 
-        # Model setup
-        checkpoint = torch.load("src/omx_controller/omx_controller/models/BC/real_bc_model.pth", map_location=DEVICE)
-        self.model = BCPolicy(state_dim=6, action_dim=6)
-        self.model.load_state_dict(checkpoint["model_state_dict"])
+        # ===== BC =====
+        #checkpoint = torch.load("src/omx_controller/omx_controller/models/BC/real_bc_model.pth", map_location=DEVICE)
+        #self.model = BCPolicy(state_dim=6, action_dim=6)
+        #self.model.load_state_dict(checkpoint["model_state_dict"])
         #self.model.load_state_dict(torch.load("src/omx_controller/omx_controller/models/BC/bc_model.pth", weights_only=True))
-        self.model.eval()
+        #self.model.eval()
         
-        self.state_mean = checkpoint["state_mean"].to(DEVICE)
-        self.state_std = checkpoint["state_std"].to(DEVICE)
-        self.action_mean = checkpoint["action_mean"].to(DEVICE)
-        self.action_std = checkpoint["action_std"].to(DEVICE)
+        # ===== BC ===
+        #self.state_mean = checkpoint["state_mean"].to(DEVICE)
+        #self.state_std = checkpoint["state_std"].to(DEVICE)
+        #self.action_mean = checkpoint["action_mean"].to(DEVICE)
+        #self.action_std = checkpoint["action_std"].to(DEVICE)
     
 
         self.agent = SACAgent(state_dim = 9, action_dim = 6)
-        if os.path.exists("src/omx_controller/omx_controller/models/SAC/SAC.pth"):
-            self.agent.load_checkpoint("src/omx_controller/omx_controller/models/SAC/SAC.pth")
-        self.replay = ReplayBuffer(state_dim = 9, action_dim = 6, capacity = 1000, device = DEVICE)
+        if os.path.exists("src/omx_controller/omx_controller/models/SAC/checkpoint/SAC.pth"):
+            self.agent.load_checkpoint("src/omx_controller/omx_controller/models/SAC/checkpoint/SAC.pth")
+            self.get_logger().info(f"Loaded SAC.pth")
+        #self.replay = ReplayBuffer(state_dim = 9, action_dim = 6, capacity = 1000, device = DEVICE)
+        self.replay = ReplayBuffer(state_dim = 9, action_dim = 6, capacity = 1000000, device = DEVICE)
+        if os.path.exists("src/omx_controller/omx_controller/models/SAC/checkpoint/replay.pth"):
+            self.replay.load("src/omx_controller/omx_controller/models/SAC/checkpoint/replay.pth")
         # Control / Logging variables
         self.prev_arm_positions = None
         self.prev_gripper_position = None
@@ -164,6 +169,13 @@ class Controller(Node):
         self.ball_reset_in_progress = False
         self.tolerance = 0.001  # Tolerance for pose comparison
 
+        self.state_mean = torch.tensor(
+            [0,0,0,0,0,0,0,0,0], dtype=torch.float32, device=DEVICE
+        )
+
+        self.state_std = torch.tensor(
+            [1,1,1,1,1,1,0.3,0.3,0.3], dtype=torch.float32, device=DEVICE
+        )
         # CSV logging
         self.path = self.create_log_file()
         self.csv_file = open(self.path, "w", newline="") #open("src/omx_controller/omx_controller/models/SAC/sac_log.csv", "w", newline="")
@@ -210,6 +222,7 @@ class Controller(Node):
                 f'Gripper: {self.gripper_position}'
             )
             self.last_joint_log_time = current_time
+        #print("joint callback")
 
     def ball_callback(self, msg):
         pos = msg.position
@@ -254,226 +267,9 @@ class Controller(Node):
 
         self.gripper_client.send_goal_async(goal_msg)
 
-    # def control_step(self):
-    #     if not self.joint_received:
-    #         return
-
-    #     if self.initial_omx_pose is None:
-    #         self.initial_omx_pose = self.arm_joint_positions + [self.gripper_position]
-    #         self.get_logger().info("Initial OMX pose captured!")
-
-    #     # ===== RESET STATE MACHINE =====
-    #     if self.reset_state == 'reset_robot':
-    #         self.reset_omx_pose()
-    #         if self.is_pose_near_initial():
-    #             self.get_logger().info("Robot reset done")
-    #             self.reset_state = 'reset_ball'
-    #         return
-
-    #     elif self.reset_state == 'reset_ball':
-    #         if not self.ball_reset_in_progress:
-    #             self.ball_reset_in_progress = True
-    #             self.reset_ball()
-    #         return
-
-    #     if self.resetting or not self.new_episode_ready:
-    #         return
-
-    #     # ===== TF =====
-    #     try:
-    #         transform = self.tf_buffer.lookup_transform(
-    #             'world',
-    #             'end_effector_link',
-    #             rclpy.time.Time()
-    #         )
-
-    #         ee_pos = [
-    #             transform.transform.translation.x,
-    #             transform.transform.translation.y,
-    #             transform.transform.translation.z
-    #         ]
-    #         #self.get_logger().info(f"Distance:{np.linalg.norm(np.array(self.ball_pos) - np.array(ee_pos))}")
-    #     except Exception:
-    #         ee_pos = [np.nan, np.nan, np.nan]
-
-    #     self.joint_pos = ee_pos
-    #     self.get_logger().info(f"Distance:{np.linalg.norm(np.array(self.ball_pos) - np.array(ee_pos))}")
-
-    #     # ===== CURRENT STATE =====
-    #     #current_state_list = self.arm_joint_positions + [self.gripper_position]
-    #     relative_ball = (self.ball_pos - self.joint_pos).tolist()
-    #     current_state_list = (
-    #         self.arm_joint_positions +
-    #         [self.gripper_position] +
-    #         relative_ball
-    #     )
-    #     # ===== REWARD =====
-    #     reward_fn = RewardFunction(
-    #         self.ball_pos,
-    #         self.joint_pos,
-    #         self.timestep
-    #     )
-    #     reward = reward_fn.reward
-    #     done = reward_fn.done
-
-    #     # =========================================================
-    #     # 🟢 LOG + REPLAY chỉ khi đã có prev state
-    #     # =========================================================
-    #     if self.prev_arm_positions is not None and self.last_action_arm is not None:
-
-    #         action_log = self.last_action_arm + [self.last_action_gripper] 
-
-    #         row = (
-    #             [self.episode] +
-    #             [self.timestep] +
-    #             self.prev_arm_positions +
-    #             [self.prev_gripper_position] +
-    #             current_state_list +
-    #             action_log +
-    #             self.joint_pos +
-    #             self.ball_pos +
-    #             [reward] +
-    #             [done]
-    #         )
-
-    #         self.writer.writerow(row)
-
-    #         if self.timestep % 50 == 0:
-    #             self.csv_file.flush()
-
-    #         # Push replay safely
-    #         #prev_state = self.prev_arm_positions + [self.prev_gripper_position] 
-    #         prev_relative_ball = (
-    #             np.array(self.prev_ball_pos) - np.array(self.prev_joint_pos)
-    #         ).tolist()
-
-    #         prev_state = (
-    #             self.prev_arm_positions +
-    #             [self.prev_gripper_position] +
-    #             prev_relative_ball
-    #         )
-    #         if self.prev_state is not None:
-    #             self.replay.push(
-    #                 prev_state,
-    #                 action_log,
-    #                 reward,
-    #                 current_state_list,
-    #                 done
-    #             )
-
-    #         self.prev_state = current_state_list
-
-    #         self.timestep += 1
-    #         self.episode_step += 1
-
-    #         if self.timestep % 2000 == 0:
-    #             self.get_logger().info("Episode done -> start reset")
-    #             self.reset_state = 'reset_robot'
-    #             self.resetting = True
-    #             self.new_episode_ready = False
-    #             self.episode += 1
-    #             self.timestep = 0
-    #             return
-
-    #     # =========================================================
-    #     # 🟢 MODEL INFERENCE
-    #     # =========================================================
-    #     state_tensor = torch.tensor(current_state_list, dtype=torch.float32).unsqueeze(0)
-
-
-    #     """with torch.no_grad():
-    #         mean, log_std = self.agent.actor(state_tensor)
-    #         action_tensor = torch.tanh(mean)   # deterministic action
-
-    #     '''with torch.no_grad():
-    #         action_tensor, _ = self.agent.actor(state_tensor)'''
-        
-    #     '''with torch.no_grad():
-    #         action_tensor = self.model.act(state_tensor)'''
-        
-    #     action = action_tensor.squeeze(0).cpu().numpy()
-
-    #     self.last_action_arm = action[:5].tolist()
-    #     self.last_action_gripper = float(action[5])"""
-    #     with torch.no_grad():
-    #         mean, log_std = self.agent.actor(state_tensor)
-    #         action_tensor = torch.tanh(mean)
-
-    #     action = action_tensor.squeeze(0).cpu().numpy()
-
-    #     # SCALE delta
-    #     max_delta = 0.05
-    #     delta = action * max_delta
-
-    #     current_joint = np.array(self.arm_joint_positions)
-    #     joint_command = current_joint + delta[:5]
-
-    #     self.last_action_arm = joint_command.tolist()
-    #     self.last_action_gripper = float(self.gripper_position + delta[5])
-
-    #     self.send_arm_command(self.last_action_arm)
-    #     self.send_gripper_command(self.last_action_gripper)
-
-    #     # state_tensor = torch.tensor(
-    #     #     current_state_list, dtype=torch.float32
-    #     # ).unsqueeze(0).to(DEVICE)
-
-    #     # with torch.no_grad():
-
-    #     #     # =====================
-    #     #     # 1. Normalize state
-    #     #     # =====================
-    #     #     state_tensor = (state_tensor - self.state_mean) / self.state_std
-
-    #     #     # =====================
-    #     #     # 2. Forward model (deterministic)
-    #     #     # =====================
-    #     #     action_tensor = self.model.act(state_tensor, deterministic=True)
-
-    #     #     # =====================
-    #     #     # 3. Unnormalize action
-    #     #     # =====================
-    #     #     action_tensor = action_tensor * self.action_std + self.action_mean
-
-    #     #     # =====================
-    #     #     # 4. Safety clamp (rất quan trọng)
-    #     #     # =====================
-    #     #     max_delta = 0.2
-    #     #     action_tensor = torch.clamp(action_tensor, -max_delta, max_delta)
-
-    #     # # =====================
-    #     # # 5. Convert to numpy
-    #     # # =====================
-    #     # action = action_tensor.squeeze(0).cpu().numpy()
-
-    #     # # Nếu dataset là DELTA JOINT:
-    #     # joint_command = action
-    #     # #joint_command = np.array(current_state_list) + action
-
-    #     # self.last_action_arm = joint_command[:5].tolist()
-    #     # self.last_action_gripper = float(joint_command[5])
-
-    #     # self.send_arm_command(self.last_action_arm)
-    #     # self.send_gripper_command(self.last_action_gripper)
-
-    #     # =========================================================
-    #     # 🟢 UPDATE PREV STATE
-    #     # =========================================================
-    #     self.prev_arm_positions = self.arm_joint_positions.copy()
-    #     self.prev_gripper_position = self.gripper_position
-    #     self.prev_ball_pos = self.ball_pos.copy()
-
-    #     # =========================================================
-    #     # 🟢 TRAIN
-    #     # =========================================================
-    #     if len(self.replay) >= 1000:
-    #         self.agent.update(self.replay)
-    #         self.agent.save_checkpoint("src/omx_controller/omx_controller/models/SAC/SAC.pth")
-    #         self.replay = ReplayBuffer(capacity=1000)
-
-
     def control_step(self):
-
+        if self.timestep >= 20000:
+            exit()
         if not self.joint_received:
             return
 
@@ -539,7 +335,7 @@ class Controller(Node):
                 self.joint_pos,
                 self.prev_ball_pos,
                 self.prev_wrist_pos,
-                self.timestep
+                self.episode_step
             )
 
             reward = reward_fn.reward
@@ -583,68 +379,67 @@ class Controller(Node):
             self.episode_step += 1
             self.prev_wrist_pos = self.joint_pos.copy()
             self.prev_ball_pos = self.ball_pos.copy()
-            if self.timestep >= 20000:
-                exit()
             # Episode end
-            if self.timestep % 4000 == 0:
+            if done:
                 self.get_logger().info("Episode done -> start reset")
                 self.reset_state = 'reset_robot'
                 self.resetting = True
                 self.new_episode_ready = False
                 self.episode += 1
-                self.timestep = 0
+                self.episode_step = 0
 
                 self.prev_state = None
                 self.prev_action = None
+                self.prev_ball_pos = None
+                self.prev_wrist_pos = None
                 return
 
-        # ================= MODEL INFERENCE =================
+
         # state_tensor = torch.tensor(
         #     current_state,
-        #     dtype=torch.float32
-        # ).unsqueeze(0).to(DEVICE)
-
-        # with torch.no_grad():
-        #     mean, log_std = self.agent.actor(state_tensor)
-        #     action_tensor = torch.tanh(mean)
-
-        # action = action_tensor.squeeze(0).cpu().numpy()
-
-        # # ===== SCALE DELTA =====
-        # max_delta = 0.05
-        # delta = action * max_delta
-
-        # current_joint = np.array(self.arm_joint_positions)
-        # joint_command = current_joint + delta[:5]
-
-        # gripper_command = self.gripper_position + delta[5]
-
-        # # Save action (absolute command)
-        # #self.prev_action = joint_command.tolist() + [float(gripper_command)]
-        # self.prev_action = action.tolist()
+        #     dtype=torch.float32,
+        #     device=DEVICE
+        # ).unsqueeze(0)
 
         state_tensor = torch.tensor(
             current_state,
             dtype=torch.float32,
             device=DEVICE
-        ).unsqueeze(0)
+        )
+
+        state_tensor = (state_tensor - self.state_mean) / (self.state_std + 1e-6)
+
+        state_tensor = state_tensor.unsqueeze(0)
 
         with torch.no_grad():
             action_tensor, _, _ = self.agent.actor.sample(state_tensor)
 
         action = action_tensor.squeeze(0).cpu().numpy()
 
+        action = np.clip(action, -1.0, 1.0)
+
 
         # ===== SCALE DELTA =====
-        max_delta = 0.05
+        max_delta = 0.05 # 0.3
         delta = action * max_delta
+        # current_joint = np.array(self.arm_joint_positions)
+        # joint_command = current_joint + delta[:5]
+        # #gripper_command = self.gripper_position + delta[5]
+        # gripper_command = np.clip(
+        #     self.gripper_position + delta[5],
+        #     self.gripper_min,
+        #     self.gripper_max
+        # )
 
         current_joint = np.array(self.arm_joint_positions)
-
-        joint_command = current_joint + delta[:5]
-
-        gripper_command = self.gripper_position + delta[5]
-
+        arm_delta = action[:5] * 0.03
+        gripper_delta = action[5] * 0.1
+        joint_command = current_joint + arm_delta
+        gripper_command = np.clip(
+            self.gripper_position + gripper_delta,
+            self.gripper_min,
+            self.gripper_max
+        )
 
         # Save action (policy output)
         self.prev_action = action.tolist()
@@ -656,12 +451,16 @@ class Controller(Node):
         self.prev_state = current_state
 
         # ================= TRAIN =================
-        if len(self.replay) >= 1000:
-            self.agent.update(self.replay)
+        if len(self.replay) > 10000 and self.timestep % 10 == 0:
+            for _ in range(5):
+                self.agent.update(self.replay)
+            
+        if self.timestep % 1000 == 0 and len(self.replay) > 0:
             self.agent.save_checkpoint(
-                "src/omx_controller/omx_controller/models/SAC/SAC.pth"
+                "src/omx_controller/omx_controller/models/SAC/checkpoint/SAC.pth"
             )
-            self.replay = ReplayBuffer(state_dim = 9, action_dim = 6, capacity=1000, device = DEVICE)
+            self.replay.save("src/omx_controller/omx_controller/models/SAC/checkpoint/replay.pth")
+
     def reset_omx_pose(self):
         if self.initial_omx_pose is None:
             return
@@ -789,6 +588,5 @@ def main():
 
         node.destroy_node()
         rclpy.shutdown()
-
 if __name__ == '__main__':
     main()

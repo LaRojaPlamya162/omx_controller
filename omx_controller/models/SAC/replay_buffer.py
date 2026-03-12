@@ -1,29 +1,6 @@
-# import random
-# import numpy as np
-
-# class ReplayBuffer:
-#     def __init__(self, capacity):
-#         self.capacity = capacity
-#         self.buffer = []
-#         self.pos = 0
-
-#     def push(self, s, a, r, s_, d):
-#         if len(self.buffer) < self.capacity:
-#             self.buffer.append(None)
-#         self.buffer[self.pos] = (s, a, r, s_, d)
-#         self.pos = (self.pos + 1) % self.capacity
-
-#     def sample(self, batch_size):
-#         batch = random.sample(self.buffer, batch_size)
-#         s, a, r, s_, d = map(np.stack, zip(*batch))
-#         return s, a, r, s_, d
-
-#     def __len__(self):
-#         return len(self.buffer)
-
-
 import numpy as np
 import torch
+import os
 
 class ReplayBuffer:
     def __init__(self, state_dim, action_dim, capacity, device):
@@ -63,3 +40,45 @@ class ReplayBuffer:
 
     def __len__(self):
         return self.size
+        # ===============================
+    # SAVE BUFFER
+    # ===============================
+        # ===============================
+    # SAVE BUFFER
+    # ===============================
+    def save(self, path):
+        data = {
+            "state": self.state[:self.size],
+            "action": self.action[:self.size],
+            "reward": self.reward[:self.size],
+            "next_state": self.next_state[:self.size],
+            "done": self.done[:self.size],
+            "ptr": self.ptr,
+            "size": self.size
+        }
+
+        torch.save(data, path)
+        print(f"ReplayBuffer saved to {path}")
+
+    # ===============================
+    # LOAD BUFFER
+    # ===============================
+    def load(self, path):
+        if not os.path.exists(path):
+            print("ReplayBuffer file not found")
+            return
+
+        data = torch.load(path, weights_only=False)
+
+        size = data["size"]
+
+        self.state[:size] = data["state"]
+        self.action[:size] = data["action"]
+        self.reward[:size] = data["reward"]
+        self.next_state[:size] = data["next_state"]
+        self.done[:size] = data["done"]
+
+        self.ptr = data["ptr"]
+        self.size = size
+
+        print(f"ReplayBuffer loaded from {path} with {self.size} samples")
