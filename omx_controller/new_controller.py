@@ -32,7 +32,8 @@ from omx_controller.models.SAC.sac_model import SACAgent
 from omx_controller.models.SAC.replay_buffer import ReplayBuffer
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+MODEL_DIR = "src/omx_controller/omx_controller/models/SAC/checkpoint_3"
+#LOG_PATH = "src/omx_controller/omx_controller/models/SAC/logs_2"
 class Controller(Node):
 
     def __init__(self):
@@ -145,13 +146,21 @@ class Controller(Node):
     
 
         self.agent = SACAgent(state_dim = 9, action_dim = 6)
-        if os.path.exists("src/omx_controller/omx_controller/models/SAC/checkpoint/SAC.pth"):
-            self.agent.load_checkpoint("src/omx_controller/omx_controller/models/SAC/checkpoint/SAC.pth")
+        if os.path.exists(os.path.join(MODEL_DIR, "SAC.pth")):
+        #if os.path.exists("src/omx_controller/omx_controller/models/SAC/checkpoint_1/SAC.pth"):
+            #self.agent.load_checkpoint("src/omx_controller/omx_controller/models/SAC/checkpoint_1/SAC.pth")
+            self.agent.load_checkpoint(os.path.join(MODEL_DIR, "SAC.pth"))
             self.get_logger().info(f"Loaded SAC.pth")
+        #if os.path.exists("src/omx_controller/omx_controller/models/SAC/checkpoint/SAC.pth"):
+            #self.agent.load_checkpoint("src/omx_controller/omx_controller/models/SAC/checkpoint/SAC.pth")
+            #self.get_logger().info(f"Loaded SAC.pth")
         #self.replay = ReplayBuffer(state_dim = 9, action_dim = 6, capacity = 1000, device = DEVICE)
         self.replay = ReplayBuffer(state_dim = 9, action_dim = 6, capacity = 1000000, device = DEVICE)
-        if os.path.exists("src/omx_controller/omx_controller/models/SAC/checkpoint/replay.pth"):
-            self.replay.load("src/omx_controller/omx_controller/models/SAC/checkpoint/replay.pth")
+        if os.path.exists(os.path.join(MODEL_DIR,"replay.pth")):
+        #if os.path.exists("src/omx_controller/omx_controller/models/SAC/checkpoint_1/replay.pth"):
+            self.replay.load(os.path.join(MODEL_DIR, "replay.pth"))
+            #self.replay.load("src/omx_controller/omx_controller/models/SAC/checkpoint_1/replay.pth")
+            self.get_logger().info(f"Loaded replay buffer")
         # Control / Logging variables
         self.prev_arm_positions = None
         self.prev_gripper_position = None
@@ -181,14 +190,28 @@ class Controller(Node):
         self.csv_file = open(self.path, "w", newline="") #open("src/omx_controller/omx_controller/models/SAC/sac_log.csv", "w", newline="")
         self.writer = csv.writer(self.csv_file)
         self.writer.writerow([
-            'episode', 'timestep',
-            's1', 's2', 's3', 's4', 's5', 'g_s',
-            'n_s1', 'n_s2', 'n_s3', 'n_s4', 'n_s5', 'n_g_s',
-            'a1', 'a2', 'a3', 'a4', 'a5', 'g_a',
-            'jp_x', 'jp_y', 'jp_z',
-            'bp_x', 'bp_y', 'bp_z',
-            'reward', 'done'
-        ])
+            'episode','timestep',
+
+            # state_t
+            's1','s2','s3','s4','s5','g_s','rb_x','rb_y','rb_z',
+
+            # action
+            'a1','a2','a3','a4','a5','g_a',
+
+            # next_state
+            'ns1','ns2','ns3','ns4','ns5','ng_s','nrb_x','nrb_y','nrb_z',
+
+            # ee position
+            'jp_x','jp_y','jp_z',
+
+            # ball position
+            'bp_x','bp_y','bp_z',
+
+            # distance
+            'distance',
+
+            'reward','done'
+            ])
 
         # Create timer for control loop (20 Hz)
         self.control_timer = self.create_timer(0.05, self.control_step)
@@ -357,6 +380,7 @@ class Controller(Node):
                 current_state +
                 self.joint_pos +
                 self.ball_pos +
+                [distance] +
                 [reward] +
                 [done]
             )
@@ -457,9 +481,11 @@ class Controller(Node):
             
         if self.timestep % 1000 == 0 and len(self.replay) > 0:
             self.agent.save_checkpoint(
-                "src/omx_controller/omx_controller/models/SAC/checkpoint/SAC.pth"
+                os.path.join(MODEL_DIR, "SAC.pth")
+                #"src/omx_controller/omx_controller/models/SAC/checkpoint_3/SAC.pth"
             )
-            self.replay.save("src/omx_controller/omx_controller/models/SAC/checkpoint/replay.pth")
+            self.replay.save(os.path.join(MODEL_DIR, "replay.pth"))
+            #self.replay.save("src/omx_controller/omx_controller/models/SAC/checkpoint_1/replay.pth")
 
     def reset_omx_pose(self):
         if self.initial_omx_pose is None:
@@ -546,8 +572,8 @@ class Controller(Node):
         self.ball_reset_in_progress = False
     
     def create_log_file(self):
-
-        log_dir = Path("src/omx_controller/omx_controller/models/SAC/logs")
+        log_dir = Path("src/omx_controller/omx_controller/models/SAC/logs_3")
+        #log_dir = Path("src/omx_controller/omx_controller/models/SAC/logs")
         log_dir.mkdir(parents=True, exist_ok=True)
 
         existing_logs = list(log_dir.glob("log_*.csv"))

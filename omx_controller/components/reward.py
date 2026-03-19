@@ -1,6 +1,5 @@
 import numpy as np
 import math
-
 class RewardFunction:
     def __init__(
         self,
@@ -14,23 +13,16 @@ class RewardFunction:
         max_steps = 1000
         #max_steps=500,
     ):
-
         self.ball_pos = np.array(ball_pos)
         self.wrist_pos = np.array(wrist_pos)
         self.prev_ball_pos = np.array(prev_ball_pos)
         self.prev_wrist_pos = np.array(prev_wrist_pos)
-
         self.timestep = timestep
         self.target_origin = target_origin
         self.target_size = target_size
         self.max_steps = max_steps
-
         self.done = self.check_done()
         self.reward = self.compute_reward()
-
-    # ==========================================================
-    # Utilities
-    # ==========================================================
 
     def target_center(self):
         x_min, y_min = self.target_origin
@@ -67,7 +59,6 @@ class RewardFunction:
             return True
 
         return False
-
 
     def compute_reward(self):
 

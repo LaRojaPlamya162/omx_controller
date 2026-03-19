@@ -2,7 +2,7 @@ from omx_controller.models.SAC.network import Actor, Critic
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 LOG_STD_MIN = -20
 LOG_STD_MAX = 2
 class SACAgent:
@@ -14,6 +14,13 @@ class SACAgent:
         self.q1_target = Critic(state_dim, action_dim)
         self.q2_target = Critic(state_dim, action_dim)
 
+        self.actor = self.actor.to(DEVICE)
+        self.q1 = self.q1.to(DEVICE)
+        self.q2 = self.q2.to(DEVICE)
+        self.q1_target = self.q1_target.to(DEVICE)
+        self.q2_target = self.q2_target.to(DEVICE)
+    
+
         self.q1_target.load_state_dict(self.q1.state_dict())
         self.q2_target.load_state_dict(self.q2.state_dict())
 
@@ -23,7 +30,8 @@ class SACAgent:
         
         # ===== SAC v2: auto entropy =====
         self.target_entropy = -action_dim
-        self.log_alpha = torch.zeros(1, requires_grad = True)
+        #self.log_alpha = torch.zeros(1, requires_grad = True)
+        self.log_alpha = torch.zeros(1, requires_grad=True, device=DEVICE)
         self.alpha_opt = torch.optim.Adam([self.log_alpha], lr=3e-4)
 
         self.gamma = 0.99
@@ -117,7 +125,8 @@ class SACAgent:
     
     def load_checkpoint(self, path):
         #ckpt = torch.load(path, map_location=self.device)
-        ckpt = torch.load(path)
+        #ckpt = torch.load(path)
+        ckpt = torch.load(path, map_location=DEVICE)
         self.actor.load_state_dict(ckpt["actor"])
         self.q1.load_state_dict(ckpt["q1"])
         self.q2.load_state_dict(ckpt["q2"])
@@ -129,7 +138,8 @@ class SACAgent:
         self.q2_opt.load_state_dict(ckpt["q2_opt"])
 
         #self.log_alpha.data.copy_(ckpt["log_alpha"].to(self.device))
-        self.log_alpha.data.copy_(ckpt["log_alpha"])
+        self.log_alpha.data.copy_(ckpt['log_alpha'].to(DEVICE))
+        #self.log_alpha.data.copy_(ckpt["log_alpha"])
         self.alpha_opt.load_state_dict(ckpt["alpha_opt"])
 
         print(f"[✓] Loaded from {path}")

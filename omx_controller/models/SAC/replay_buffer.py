@@ -40,10 +40,7 @@ class ReplayBuffer:
 
     def __len__(self):
         return self.size
-        # ===============================
-    # SAVE BUFFER
     # ===============================
-        # ===============================
     # SAVE BUFFER
     # ===============================
     def save(self, path):
