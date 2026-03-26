@@ -62,9 +62,11 @@ import numpy as np
 
 files = [
     "log_2.csv",
-    "log_5.csv",
+    #"log_5.csv",
     "log_7.csv",
-    "log_9.csv",
+    #"log_9.csv",
+    "log_14.csv",
+    "log_15.csv"
 ]
 
 log_dir = "omx_controller/models/SAC/logs_3"
@@ -74,18 +76,17 @@ for file in files:
 
     df = pd.read_csv(path)
     distance = df['distance']
-    #distance = np.sqrt(dx**2 + dy**2 + dz**2)
     reward = df['reward']
 
     # plot
-    plt.plot(distance, label = file)
-    #plt.plot(reward, label=file)
+    #plt.plot(distance, label = file)
+    plt.plot(reward, label=file)
 
 plt.xlabel("Timestep")
-plt.ylabel("Distance")
-plt.title("Distance")
-#plt.ylabel("Reward")
-#plt.title("Reward")
+#plt.ylabel("Distance")
+#plt.title("Distance")
+plt.ylabel("Reward")
+plt.title("Reward")
 plt.legend()
 plt.grid()
 
