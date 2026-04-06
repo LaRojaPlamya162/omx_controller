@@ -1,456 +1,618 @@
-# #!/usr/bin/env python3
+#!/usr/bin/env python3
 
-import os
+# ===== System Lib =====
 import sys
 import time
-import csv
 import torch
+import csv
+import os
 import numpy as np
+from pathlib import Path 
 
-# ROS2 Libs
+# ===== ROS2 Lib =====
+from control_msgs.action import GripperCommand
+from geometry_msgs.msg import Pose
 import rclpy
+from rclpy.action import ActionClient
 from rclpy.node import Node
-from rclpy.duration import Duration
 from sensor_msgs.msg import JointState
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from trajectory_msgs.msg import JointTrajectory
+from trajectory_msgs.msg import JointTrajectoryPoint
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
+from ros_gz_interfaces.srv import DeleteEntity, SpawnEntity
+from ros_gz_interfaces.msg import Entity
+from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
-
-# Component Libs (Giữ nguyên cấu trúc import của bạn)
+from tf2_ros import Buffer, TransformListener
+# ===== Component Lib =====
 from omx_controller.models.BC.bc_model import BCPolicy
+from omx_controller.components.reward import RewardFunction
+from omx_controller.models.SAC.network import Actor,Critic
 from omx_controller.models.SAC.sac_model import SACAgent
 from omx_controller.models.SAC.replay_buffer import ReplayBuffer
 
-class RealRobotController(Node):
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+MODEL_DIR = "src/omx_controller/omx_controller/models/SAC/checkpoint_3"
+#LOG_PATH = "src/omx_controller/omx_controller/models/SAC/logs_2"
+class Controller(Node):
 
     def __init__(self):
-        super().__init__('omx_real_controller')
+        super().__init__('keyboard_controller')
 
-        # 1. Cấu hình khớp (6 khớp bao gồm cả gripper)
-        self.joint_names = [
-            'joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'gripper_joint_1'
-        ]
-        self.num_joints = len(self.joint_names)
+        # QoS profile for reliable subscriptions
+        qos = QoSProfile(
+            depth=10,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            history=QoSHistoryPolicy.KEEP_LAST
+        )
 
-        # 2. Khai báo Publisher & Subscriber
+        # Publisher for arm joint control
         self.arm_publisher = self.create_publisher(
             JointTrajectory, '/arm_controller/joint_trajectory', 10
         )
-        self.joint_subscription = self.create_subscription(
+
+        # Action client for GripperCommand
+        self.gripper_client = ActionClient(
+            self, GripperCommand, '/gripper_controller/gripper_cmd'
+        )
+
+        # Subscriber for joint states
+        self.subscription = self.create_subscription(
             JointState, '/joint_states', self.joint_state_callback, 10
         )
-        self.joint_min = np.array([-2.8, -1.7, -1.5, -1.7, -2.8, 0.0]) 
-        self.joint_max = np.array([ 2.8,  1.5,  1.7,  1.7,  2.8, 0.019])
-        # 3. Trạng thái robot
-        self.current_joint_positions = [0.0] * self.num_joints
-        self.initial_robot_pose = None
+
+        # Subscriber to get ball pose
+        self.ball_sub = self.create_subscription(
+            Pose,
+            '/cricket_ball/pose',
+            self.ball_callback,
+            qos
+        )
+        # TF buffer
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        # Clients for spawn and delete services
+        self.spawn_client = self.create_client(SpawnEntity, '/world/empty/create')
+        self.delete_client = self.create_client(DeleteEntity, '/world/empty/remove')
+
+        # Wait for services with retry
+        max_attempts = 30
+        attempt = 0
+        while attempt < max_attempts and rclpy.ok():
+            spawn_ready = self.spawn_client.wait_for_service(timeout_sec=10.0)
+            delete_ready = self.delete_client.wait_for_service(timeout_sec=10.0)
+            if spawn_ready and delete_ready:
+                self.get_logger().info('Services /world/empty/create and /world/empty/remove are available.')
+                break
+            attempt += 1
+            self.get_logger().warn(f'Services not available yet (attempt {attempt}/{max_attempts}) - spawn: {spawn_ready}, delete: {delete_ready}. Retrying in 5 seconds...')
+            time.sleep(5.0)
+        if attempt == max_attempts:
+            self.get_logger().error('Services not available after max attempts. Node may not function properly.')
+
+        # Wait for gripper action server
+        while not self.gripper_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().warn('Waiting for gripper action server...')
+            time.sleep(1.0)
+
+        # Initial states
+        self.initial_arm_positions = [0.0] * 5
+        self.initial_gripper_position = 0.0
+        self.arm_joint_positions = [0.0] * 5
+        self.arm_joint_names = [
+            'joint1',
+            'joint2',
+            'joint3',
+            'joint4',
+            'joint5',
+        ]
+        self.gripper_position = 0.0
+        self.gripper_max = 1.1
+        self.gripper_min = 0.0
+        #self.initial_ball_pose = [0.0, 2.0, 1.0]  # Consistent with spawn position
         self.joint_received = False
-        self.resetting = False
-        self.reset_state = 'none' # 'none' hoặc 'resetting'
-        self.reset_sent = False
-        self.reset_start_time = None
-        # 4. Tải Model (6 đầu vào, 6 đầu ra)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.initial_omx_pose = None
+        self.ball_pos = [0.2, 0.2, 0.0]  # Default ball position
+        self.joint_pos = None
+        # Control parameters
+        self.max_delta = 0.02
+        self.gripper_delta = 0.1
+        self.last_command_time = time.time()
+        self.command_interval = 0.02
+
+        # Gripper send throttling
+        self.last_gripper_send_time = 0.0
+        self.gripper_send_interval = 0.05
+
+        # Logging throttle (every 1 second)
+        self.last_joint_log_time = 0.0
+        self.last_arm_log_time = 0.0
+        self.last_gripper_log_time = 0.0
+        self.last_ball_log_time = 0.0
+        self.log_interval = 1.0
+
+        # ===== BC =====
+        checkpoint = torch.load("src/omx_controller/omx_controller/models/BC/real_bc_model_v2_squashed.pth", map_location=DEVICE)
+        self.model = BCPolicy(state_dim=6, action_dim=6).to(DEVICE)
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        self.model.eval()
         
-        # BC Model
-        self.bc_model = BCPolicy(state_dim=self.num_joints, action_dim=self.num_joints)
-        bc_path = "src/omx_controller/omx_controller/models/BC/bc_model.pth"
-        if os.path.exists(bc_path):
-            self.bc_model.load_state_dict(torch.load(bc_path, map_location=self.device))
-            self.bc_model.eval()
-            self.get_logger().info("Loaded BC Model")
+        # ===== BC ===
+        self.state_mean = checkpoint["state_mean"].to(DEVICE)
+        self.state_std = checkpoint["state_std"].to(DEVICE)
+        self.action_mean = checkpoint["action_mean"].to(DEVICE)
+        self.action_std = checkpoint["action_std"].to(DEVICE)
+    
 
-        # SAC Agent
-        self.agent = SACAgent(state_dim=self.num_joints, action_dim=self.num_joints)
-        sac_path = "src/omx_controller/omx_controller/models/SAC/SAC.pth"
-        if os.path.exists(sac_path):
-            self.agent.load_checkpoint(sac_path)
-            self.get_logger().info("Loaded SAC Model")
-
-        # 5. Logging & CSV
+        self.agent = SACAgent(state_dim = 9, action_dim = 6)
+        if os.path.exists(os.path.join(MODEL_DIR, "SAC.pth")):
+        #if os.path.exists("src/omx_controller/omx_controller/models/SAC/checkpoint_1/SAC.pth"):
+            #self.agent.load_checkpoint("src/omx_controller/omx_controller/models/SAC/checkpoint_1/SAC.pth")
+            self.agent.load_checkpoint(os.path.join(MODEL_DIR, "SAC.pth"))
+            self.get_logger().info(f"Loaded SAC.pth")
+        #if os.path.exists("src/omx_controller/omx_controller/models/SAC/checkpoint/SAC.pth"):
+            #self.agent.load_checkpoint("src/omx_controller/omx_controller/models/SAC/checkpoint/SAC.pth")
+            #self.get_logger().info(f"Loaded SAC.pth")
+        #self.replay = ReplayBuffer(state_dim = 9, action_dim = 6, capacity = 1000, device = DEVICE)
+        self.replay = ReplayBuffer(state_dim = 9, action_dim = 6, capacity = 1000000, device = DEVICE)
+        if os.path.exists(os.path.join(MODEL_DIR,"replay.pth")):
+        #if os.path.exists("src/omx_controller/omx_controller/models/SAC/checkpoint_1/replay.pth"):
+            self.replay.load(os.path.join(MODEL_DIR, "replay.pth"))
+            #self.replay.load("src/omx_controller/omx_controller/models/SAC/checkpoint_1/replay.pth")
+            self.get_logger().info(f"Loaded replay buffer")
+        # Control / Logging variables
+        self.prev_arm_positions = None
+        self.prev_gripper_position = None
+        self.prev_ball_pos = None
+        self.prev_wrist_pos = None
+        self.prev_state = None
+        self.last_action_arm = None
+        self.last_action_gripper = None
+        self.resetting = False
+        self.new_episode_ready = True
         self.episode = 0
+        self.timestep = 0
         self.episode_step = 0
-        self.log_path = "src/omx_controller/omx_controller/models/SAC/real_robot_log.csv"
-        self.csv_file = open(self.log_path, "w", newline="")
+        self.reset_state = 'none'
+        self.ball_reset_in_progress = False
+        self.tolerance = 0.001  # Tolerance for pose comparison
+
+        # self.state_mean = torch.tensor(
+        #     [0,0,0,0,0,0,0,0,0], dtype=torch.float32, device=DEVICE
+        # )
+
+        # self.state_std = torch.tensor(
+        #     [1,1,1,1,1,1,0.3,0.3,0.3], dtype=torch.float32, device=DEVICE
+        # )
+        # CSV logging
+        self.path = self.create_log_file()
+        self.csv_file = open(self.path, "w", newline="") #open("src/omx_controller/omx_controller/models/SAC/sac_log.csv", "w", newline="")
         self.writer = csv.writer(self.csv_file)
         self.writer.writerow([
-            'episode', 'step',
-            'j1', 'j2', 'j3', 'j4', 'j5', 'g1', # State
-            'a1', 'a2', 'a3', 'a4', 'a5', 'ag1'  # Action
-        ])
+            'episode','timestep',
 
-        # 6. Timer điều khiển (20Hz)
-        # self.control_timer = self.create_timer(0.05, self.control_step)
-        self.control_timer = self.create_timer(0.1, self.control_step)
-        self.get_logger().info("Real Robot Controller Started (20Hz)")
+            # state_t
+            's1','s2','s3','s4','s5','g_s',#,'rb_x','rb_y','rb_z',
+
+            # action
+            'a1','a2','a3','a4','a5','g_a',
+
+            # next_state
+            'ns1','ns2','ns3','ns4','ns5','ng_s',#,'nrb_x','nrb_y','nrb_z',
+
+            # ee position
+            'jp_x','jp_y','jp_z',
+
+            # ball position
+            'bp_x','bp_y','bp_z',
+
+            # distance
+            'distance',
+
+            'reward','done'
+            ])
+
+        # Create timer for control loop (20 Hz)
+        self.control_timer = self.create_timer(0.05, self.control_step)
+
+    def is_pose_near_initial(self):
+        if self.initial_omx_pose is None:
+            return False
+        initial_arm = self.initial_omx_pose[:5]
+        initial_gripper = self.initial_omx_pose[5]
+        arm_close = all(abs(a - b) < self.tolerance for a, b in zip(self.arm_joint_positions, initial_arm))
+        gripper_close = abs(self.gripper_position - initial_gripper) < self.tolerance
+        return arm_close and gripper_close
 
     def joint_state_callback(self, msg):
-        """Cập nhật trạng thái khớp từ robot thật"""
-        # Kiểm tra xem tất cả tên khớp có trong msg không
-        if all(name in msg.name for name in self.joint_names):
-            for i, name in enumerate(self.joint_names):
-                idx = msg.name.index(name)
-                self.current_joint_positions[i] = msg.position[idx]
-            self.joint_received = True
-    def send_trajectory(self, target_positions, duration_sec=0.15):
-    # def send_trajectory(self, target_positions, duration_sec=0.1):
-        """Gửi lệnh quỹ đạo tới robot"""
-        msg = JointTrajectory()
-        msg.joint_names = self.joint_names
-        msg.header.stamp = self.get_clock().now().to_msg()
+        if set(self.arm_joint_names).issubset(set(msg.name)):
+            for i, joint in enumerate(self.arm_joint_names):
+                index = msg.name.index(joint)
+                self.arm_joint_positions[i] = msg.position[index]
 
-        point = JointTrajectoryPoint()
-        point.positions = [float(p) for p in target_positions]
+        if 'rh_r1_joint' in msg.name:
+            index = msg.name.index('rh_r1_joint')
+            self.gripper_position = msg.position[index]
 
-        # max_vel = 0.5  # rad/s
-        # delta = target - current
-        # vel = np.clip(delta / duration_sec, -max_vel, max_vel)
-        # point.velocities = vel.tolist()
-        point.velocities = [0.0] * self.num_joints
+        self.joint_received = True
 
-        # Duration nên lớn hơn một chút so với chu kỳ timer (0.05s) để mượt
-        point.time_from_start = Duration(seconds=0, nanoseconds=int(duration_sec*1e9)).to_msg()
+        # Throttled logging
+        current_time = time.time()
+        if current_time - self.last_joint_log_time >= self.log_interval:
+            self.get_logger().info(
+                f'Received joint states: {self.arm_joint_positions}, '
+                f'Gripper: {self.gripper_position}'
+            )
+            self.last_joint_log_time = current_time
+        #print("joint callback")
 
-        msg.points.append(point)
-        self.arm_publisher.publish(msg)
-    def normalize_state(self, state):
-        """Chuyển Radian -> [-1, 1] để đưa vào Model"""
-        state = np.array(state)
-        norm_state = 2.0 * (state - self.joint_min) / (self.joint_max - self.joint_min + 1e-6) - 1.0
-        return np.clip(norm_state, -1.0, 1.0)
+    def ball_callback(self, msg):
+        pos = msg.position
+        x, y, z = pos.x, pos.y, pos.z
+        self.ball_pos = [x, y, z]
 
-    def denormalize_action(self, action):
-        """Chuyển [-1, 1] từ Model -> Radian để gửi cho Robot"""
-        action = np.array(action)
-        real_action = (action + 1.0) * 0.5 * (self.joint_max - self.joint_min) + self.joint_min
-        return real_action
+        # Throttled logging
+        current_time = time.time()
+        if current_time - self.last_ball_log_time >= self.log_interval:
+            self.get_logger().info(f"Ball position: {x:.3f}, {y:.3f}, {z:.3f}")
+            self.last_ball_log_time = current_time
+
+    def send_arm_command(self, arm_pos):
+        arm_msg = JointTrajectory()
+        arm_msg.joint_names = self.arm_joint_names
+        arm_point = JointTrajectoryPoint()
+        arm_point.positions = arm_pos
+        arm_point.time_from_start = Duration(seconds=0, nanoseconds=50000000).to_msg()
+        arm_msg.points.append(arm_point)
+        self.arm_publisher.publish(arm_msg)
+
+        # Throttled logging
+        current_time = time.time()
+        if current_time - self.last_arm_log_time >= self.log_interval:
+            self.get_logger().info(f'Arm command sent: {arm_pos}')
+            self.last_arm_log_time = current_time
+
+    def send_gripper_command(self, gripper_pos):
+        current_time = time.time()
+        if current_time - self.last_gripper_send_time < self.gripper_send_interval:
+            return
+
+        self.last_gripper_send_time = current_time
+
+        goal_msg = GripperCommand.Goal()
+        goal_msg.command.position = gripper_pos
+        goal_msg.command.max_effort = 10.0
+
+        if not self.gripper_client.wait_for_server(timeout_sec=0.5):
+            self.get_logger().warn('Gripper action server not available')
+            return
+
+        self.gripper_client.send_goal_async(goal_msg)
 
     def control_step(self):
+        if self.timestep >= 20000:
+            exit()
         if not self.joint_received:
             return
 
-        # Lưu tư thế ban đầu để reset
-        if self.initial_robot_pose is None:
-            self.initial_robot_pose = list(self.current_joint_positions)
-            self.get_logger().info(f"Captured Home Pose: {self.initial_robot_pose}")
+        if self.initial_omx_pose is None:
+            self.initial_omx_pose = self.arm_joint_positions + [self.gripper_position]
+            self.get_logger().info("Initial OMX pose captured!")
+
+        # ================= RESET STATE MACHINE =================
+        if self.reset_state == 'reset_robot':
+            self.reset_omx_pose()
+            if self.is_pose_near_initial():
+                self.get_logger().info("Robot reset done")
+                self.reset_state = 'reset_ball'
             return
-    #     if self.reset_state == 'resetting':
 
-    # # Chỉ gửi 1 lần duy nhất
-    #         if not self.reset_sent:
-    #             self.get_logger().info("Sending reset trajectory...")
-    #             self.send_trajectory(self.initial_robot_pose, duration_sec=2.5)
-    #             self.reset_sent = True
-    #             return
+        elif self.reset_state == 'reset_ball':
+            if not self.ball_reset_in_progress:
+                self.ball_reset_in_progress = True
+                self.reset_ball()
+            return
 
-    #         # Sau khi đã gửi, chỉ kiểm tra vị trí
-    #         diff = np.abs(
-    #             np.array(self.current_joint_positions) - 
-    #             np.array(self.initial_robot_pose)
-    #         )
+        if self.resetting or not self.new_episode_ready:
+            return
 
-    #         if np.all(diff < 0.02):   # tăng tolerance lên 0.02
-    #             self.get_logger().info("Reset Complete. Starting new episode...")
-    #             self.reset_state = 'none'
-    #             self.reset_sent = False
-    #             self.episode += 1
-    #             self.episode_step = 0
+        # ================= TF END EFFECTOR =================
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                'world',
+                'end_effector_link',
+                rclpy.time.Time()
+            )
 
-    #         return
-        # Logic Reset (Dùng khi kết thúc episode hoặc gặp lỗi)
-        # if self.reset_state == 'resetting':
-        #     self.send_trajectory(self.initial_robot_pose, duration_sec=1.5)
-            
-        #     # Kiểm tra xem đã về gần vị trí home chưa
-        #     diff = np.abs(np.array(self.current_joint_positions) - np.array(self.initial_robot_pose))
-        #     if np.all(diff < 0.01):
-        #         self.get_logger().info("Reset Complete. Starting new episode...")
-        #         self.reset_state = 'none'
-        #         self.episode += 1
-        #         self.episode_step = 0
-        #     return
-        state_norm = self.normalize_state(self.current_joint_positions)
-        state_tensor = torch.tensor(state_norm, dtype=torch.float32).to(self.device).unsqueeze(0)
-        # ===== CHẠY INFERENCE (Dự đoán hành động) =====
-        #state_tensor = torch.tensor(self.current_joint_positions, dtype=torch.float32).to(self.device).unsqueeze(0)
+            ee_pos = [
+                transform.transform.translation.x,
+                transform.transform.translation.y,
+                transform.transform.translation.z
+            ]
+
+        except Exception:
+            return
+
+        self.joint_pos = ee_pos
         
+        distance = np.linalg.norm(np.array(self.ball_pos) - np.array(ee_pos))
+        #self.get_logger().info(f"Distance: {distance:.4f}")
+
+        # ================= BUILD CURRENT STATE (9D) =================
+        relative_ball = (
+            np.array(self.ball_pos) - np.array(self.joint_pos)
+        ).tolist()
+
+        current_state = (
+            self.arm_joint_positions 
+            + [self.gripper_position] 
+            #+ relative_ball
+        )
+
+        # ================= REWARD =================
+    
+        if self.prev_ball_pos is not None:
+            reward_fn = RewardFunction(
+                self.ball_pos,
+                self.joint_pos,
+                self.prev_ball_pos,
+                self.prev_wrist_pos,
+                self.episode_step
+            )
+
+            reward = reward_fn.reward
+            done = reward_fn.done
+
+        else:
+            reward = 0.0
+            done = False
+
+        # ================= PUSH REPLAY =================
+        if self.prev_state is not None and self.prev_action is not None:
+
+            # CSV log (s_t, a_t, s_t+1)
+            row = (
+                [self.episode] +
+                [self.timestep] +
+                self.prev_state +
+                self.prev_action +
+                current_state +
+                self.joint_pos +
+                self.ball_pos +
+                [distance] +
+                [reward] +
+                [done]
+            )
+
+            self.writer.writerow(row)
+
+            if self.timestep % 50 == 0:
+                self.csv_file.flush()
+
+            # Replay push
+            # self.replay.push(
+            #     self.prev_state,
+            #     self.prev_action,
+            #     reward,
+            #     current_state,
+            #     done
+            # )
+
+            self.timestep += 1
+            self.episode_step += 1
+            self.prev_wrist_pos = self.joint_pos.copy()
+            self.prev_ball_pos = self.ball_pos.copy()
+            # Episode end
+            if done:
+                self.get_logger().info("Episode done -> start reset")
+                self.reset_state = 'reset_robot'
+                self.resetting = True
+                self.new_episode_ready = False
+                self.episode += 1
+                self.episode_step = 0
+
+                self.prev_state = None
+                self.prev_action = None
+                self.prev_ball_pos = None
+                self.prev_wrist_pos = None
+                return
+
+
+        # state_tensor = torch.tensor(
+        #     current_state,
+        #     dtype=torch.float32,
+        #     device=DEVICE
+        # ).unsqueeze(0)
+
+        state_tensor = torch.tensor(
+            current_state,
+            dtype=torch.float32,
+            device=DEVICE
+        )
+
+        state_tensor = (state_tensor - self.state_mean) / (self.state_std + 1e-6)
+
+        state_tensor = state_tensor.unsqueeze(0)
         with torch.no_grad():
-            action_tensor, _ = self.agent.actor.sample(state_tensor) # Dùng sample để giống lúc train
-            action = action_tensor.squeeze(0).cpu().numpy()
-        # step_size = 0.05 
-        step_size = 0.02
-        target_positions = np.array(self.current_joint_positions) + action * step_size
-        target_positions = np.clip(target_positions, self.joint_min, self.joint_max)
-        # Gửi lệnh điều khiển
-        self.send_trajectory(target_positions, duration_sec=0.1)
+            action_tensor = self.model.act(state_tensor)
+        # with torch.no_grad():
+        #     action_tensor, _, _ = self.agent.actor.sample(state_tensor)
 
-        # Lưu Log
-        if self.episode_step % 50 == 0:
-            self.get_logger().info(f"Step {self.episode_step}:")
-            self.get_logger().info(f"  Current (Rad): {self.current_joint_positions}")
-            self.get_logger().info(f"  Action (Model): {action}")
-            self.get_logger().info(f"  Target (Rad): {target_positions}")
-        
-        self.episode_step += 1
+        action = action_tensor.squeeze(0).cpu().numpy()
 
-        # Ví dụ: Tự động reset sau 200 bước (10 giây)
-        if self.episode_step % 200 == 0: 
-            self.get_logger().warn("Episode limit reached. Resetting...")
-            self.reset_state = 'resetting'
+        action = np.clip(action, -1.0, 1.0)
 
-    def shutdown(self):
-        """Đóng file và dừng robot"""
-        self.get_logger().info("Shutting down...")
-        self.csv_file.close()
-        # Dừng robot tại chỗ
-        self.send_trajectory(self.current_joint_positions, duration_sec=2.5)
+
+        # ===== SCALE DELTA =====
+        max_delta = 0.05 # 0.3
+        delta = action * max_delta
+        # current_joint = np.array(self.arm_joint_positions)
+        # joint_command = current_joint + delta[:5]
+        # #gripper_command = self.gripper_position + delta[5]
+        # gripper_command = np.clip(
+        #     self.gripper_position + delta[5],
+        #     self.gripper_min,
+        #     self.gripper_max
+        # )
+
+        current_joint = np.array(self.arm_joint_positions)
+        arm_delta = action[:5] * 0.03
+        gripper_delta = action[5] * 0.1
+        joint_command = current_joint + arm_delta
+        gripper_command = np.clip(
+            self.gripper_position + gripper_delta,
+            self.gripper_min,
+            self.gripper_max
+        )
+
+        # Save action (policy output)
+        self.prev_action = action.tolist()
+        # Send command
+        self.send_arm_command(joint_command.tolist())
+        self.send_gripper_command(float(gripper_command))
+
+        # ================= UPDATE PREV STATE =================
+        self.prev_state = current_state
+
+        # ================= TRAIN =================
+        # if len(self.replay) > 10000 and self.timestep % 10 == 0:
+        #     for _ in range(5):
+        #         self.agent.update(self.replay)
+            
+        # if self.timestep % 1000 == 0 and len(self.replay) > 0:
+        #     self.agent.save_checkpoint(
+        #         os.path.join(MODEL_DIR, "SAC.pth")
+        #         #"src/omx_controller/omx_controller/models/SAC/checkpoint_3/SAC.pth"
+        #     )
+        #     self.replay.save(os.path.join(MODEL_DIR, "replay.pth"))
+        #     #self.replay.save("src/omx_controller/omx_controller/models/SAC/checkpoint_1/replay.pth")
+
+    def reset_omx_pose(self):
+        if self.initial_omx_pose is None:
+            return
+
+        arm_pos = self.initial_omx_pose[:5]
+        gripper_pos = float(self.initial_omx_pose[5])
+
+        self.send_arm_command(arm_pos)
+        self.send_gripper_command(gripper_pos)
+
+    def reset_ball(self):
+        self.get_logger().info("Deleting ball...")
+
+        delete_req = DeleteEntity.Request()
+        delete_req.entity = Entity()
+        delete_req.entity.name = 'cricket_ball'
+        delete_req.entity.type = 2  # EntityType.MODEL
+
+        future = self.delete_client.call_async(delete_req)
+        future.add_done_callback(self.delete_done_callback)
+
+    def delete_done_callback(self, future):
+        try:
+            result = future.result()
+            if result is None:
+                self.get_logger().error("Delete returned None")
+                return
+
+            if result.success:
+                self.get_logger().info("Delete success")
+            else:
+                self.get_logger().warn("Delete failed, spawning anyway")
+
+        except Exception as e:
+            self.get_logger().error(f"Delete exception: {e}")
+
+        self.spawn_ball()
+
+    def spawn_ball(self):
+        self.get_logger().info("Spawning ball...")
+
+        spawn_req = SpawnEntity.Request()
+        spawn_req.entity_factory.name = 'cricket_ball'
+        spawn_req.entity_factory.allow_renaming = False
+
+        model_path = os.path.expanduser(
+            '~/.gz/fuel/fuel.gazebosim.org/openrobotics/models/cricket%20ball/3/model.sdf'
+        )
+
+        with open(model_path) as f:
+            spawn_req.entity_factory.sdf = f.read()
+
+        spawn_req.entity_factory.pose.position.x = self.ball_pos[0]
+        spawn_req.entity_factory.pose.position.y = self.ball_pos[1]
+        spawn_req.entity_factory.pose.position.z = self.ball_pos[2]
+
+        spawn_req.entity_factory.relative_to = "world"
+
+        future = self.spawn_client.call_async(spawn_req)
+        future.add_done_callback(self.spawn_done_callback)
+
+    def spawn_done_callback(self, future):
+        try:
+            result = future.result()
+            if result is None or not result.success:
+                self.get_logger().error("Spawn failed")
+                return
+
+            self.get_logger().info("Ball reset complete")
+
+        except Exception as e:
+            self.get_logger().error(f"Spawn exception: {e}")
+            return
+
+        # Resume training
+        self.last_action_arm = None
+        self.last_action_gripper = None
+        self.prev_arm_positions = self.initial_omx_pose[:5]
+        self.prev_gripper_position = self.initial_omx_pose[5]
+        self.reset_state = 'none'
+        self.resetting = False
+        self.new_episode_ready = True
+        self.ball_reset_in_progress = False
+    
+    def create_log_file(self):
+        log_dir = Path("src/omx_controller/omx_controller/models/BC/logs")
+        #log_dir = Path("src/omx_controller/omx_controller/models/SAC/logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        existing_logs = list(log_dir.glob("log_*.csv"))
+
+        if not existing_logs:
+            next_index = 1
+        else:
+            indices = []
+            for f in existing_logs:
+                try:
+                    idx = int(f.stem.split("_")[1])
+                    indices.append(idx)
+                except:
+                    pass
+
+            next_index = max(indices) + 1
+
+        log_path = log_dir / f"log_{next_index}.csv"
+        print(f"Log path: {log_path}")
+        return log_path
 
 def main():
     rclpy.init()
-    node = RealRobotController()
+    node = Controller()
+
     executor = MultiThreadedExecutor()
     executor.add_node(node)
 
     try:
         executor.spin()
     except KeyboardInterrupt:
-        pass
+        print('\nCtrl+C detected. Shutting down...')
     finally:
-        node.shutdown()
+        # Close CSV file
+        if hasattr(node, 'csv_file'):
+            node.csv_file.close()
+            print("CSV log file closed.")
+
         node.destroy_node()
         rclpy.shutdown()
-
 if __name__ == '__main__':
     main()
-
-
-
-#!/usr/bin/env python3
-
-# import os
-# import numpy as np
-# import torch
-# import rclpy
-
-# from rclpy.node import Node
-# from rclpy.duration import Duration
-# from rclpy.executors import MultiThreadedExecutor
-
-# from sensor_msgs.msg import JointState
-# from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-
-# from omx_controller.models.SAC.sac_model import SACAgent
-
-
-# class OMXRealController(Node):
-
-#     def __init__(self):
-#         super().__init__('omx_real_controller')
-
-#         # =========================
-#         # Joint Configuration
-#         # =========================
-#         self.joint_names = [
-#             'joint1', 'joint2', 'joint3',
-#             'joint4', 'joint5', 'gripper_joint_1'
-#         ]
-#         self.num_joints = len(self.joint_names)
-
-#         # 🔴 CẬP NHẬT ĐÚNG LIMIT THEO ROBOT THẬT
-#         self.joint_min = np.array([-2.8, -1.7, -1.5, -1.7, -2.8, 0.0])
-#         self.joint_max = np.array([ 2.8,  1.5,  1.7,  1.7,  2.8, 0.019])
-
-#         # Velocity limit (rad/s)
-#         self.max_velocity = 0.5
-
-#         # Increment step scaling
-#         self.step_scale = 0.02   # an toàn cho hardware
-
-#         # =========================
-#         # ROS2 Pub/Sub
-#         # =========================
-#         self.traj_pub = self.create_publisher(
-#             JointTrajectory,
-#             '/arm_controller/joint_trajectory',
-#             10
-#         )
-
-#         self.create_subscription(
-#             JointState,
-#             '/joint_states',
-#             self.joint_callback,
-#             10
-#         )
-
-#         # =========================
-#         # Robot State
-#         # =========================
-#         self.current_positions = np.zeros(self.num_joints)
-#         self.initial_pose = None
-#         self.joint_received = False
-
-#         self.resetting = False
-
-#         # =========================
-#         # Load SAC Model
-#         # =========================
-#         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-#         self.agent = SACAgent(
-#             state_dim=self.num_joints,
-#             action_dim=self.num_joints
-#         )
-
-#         sac_path = "src/omx_controller/omx_controller/models/SAC/SAC.pth"
-#         if os.path.exists(sac_path):
-#             self.agent.load_checkpoint(sac_path)
-#             self.get_logger().info("Loaded SAC model")
-
-#         # =========================
-#         # Control Timer (10Hz)
-#         # =========================
-#         self.control_period = 0.5
-#         self.timer = self.create_timer(
-#             self.control_period,
-#             self.control_loop
-#         )
-
-#         self.get_logger().info("OMX Real Controller started (10Hz, safe mode)")
-
-#     # ==========================================================
-#     # Joint Callback
-#     # ==========================================================
-#     def joint_callback(self, msg):
-
-#         if not all(name in msg.name for name in self.joint_names):
-#             return
-
-#         for i, name in enumerate(self.joint_names):
-#             idx = msg.name.index(name)
-#             self.current_positions[i] = msg.position[idx]
-
-#         self.joint_received = True
-
-#     # ==========================================================
-#     # Normalize state [-1,1]
-#     # ==========================================================
-#     def normalize(self, state):
-#         norm = 2.0 * (state - self.joint_min) / \
-#                (self.joint_max - self.joint_min + 1e-6) - 1.0
-#         return np.clip(norm, -1.0, 1.0)
-
-#     # ==========================================================
-#     # Control Loop
-#     # ==========================================================
-#     def control_loop(self):
-
-#         if not self.joint_received:
-#             return
-
-#         # Capture initial pose
-#         if self.initial_pose is None:
-#             self.initial_pose = self.current_positions.copy()
-#             self.get_logger().info(f"Captured home pose: {self.initial_pose}")
-#             return
-
-#         if self.resetting:
-#             self.move_to_pose(self.initial_pose, duration=0.5)
-#             if np.all(np.abs(self.current_positions - self.initial_pose) < 0.01):
-#                 self.get_logger().info("Reset complete")
-#                 self.resetting = False
-#             return
-
-#         # ==========================
-#         # Prepare state
-#         # ==========================
-#         state_norm = self.normalize(self.current_positions)
-#         state_tensor = torch.tensor(
-#             state_norm,
-#             dtype=torch.float32,
-#             device=self.device
-#         ).unsqueeze(0)
-
-#         # ==========================
-#         # Deterministic inference
-#         # ==========================
-#         with torch.no_grad():
-#             action_tensor, _ = self.agent.actor(state_tensor)
-
-#         action = action_tensor.squeeze(0).cpu().numpy()
-#         self.get_logger().info(f"Action: {action}")
-
-#         # NaN safety
-#         if np.any(np.isnan(action)):
-#             self.get_logger().error("NaN detected in action. Skipping step.")
-#             return
-
-#         # ==========================
-#         # Incremental control
-#         # ==========================
-#         delta = action * self.step_scale
-#         target = self.current_positions + delta
-
-#         # Clamp joint limits
-#         target = np.clip(target, self.joint_min, self.joint_max)
-
-#         # ==========================
-#         # Send safe trajectory
-#         # ==========================
-#         self.move_to_pose(target, duration=0.15)
-
-#     # ==========================================================
-#     # Safe trajectory sender
-#     # ==========================================================
-#     def move_to_pose(self, target, duration=0.15):
-
-#         traj = JointTrajectory()
-#         traj.header.stamp = self.get_clock().now().to_msg()
-#         traj.joint_names = self.joint_names
-
-#         point = JointTrajectoryPoint()
-#         point.positions = target.tolist()
-
-#         # Compute velocity safely
-#         delta = target - self.current_positions
-#         vel = delta / duration
-#         vel = np.clip(vel, -self.max_velocity, self.max_velocity)
-
-#         point.velocities = vel.tolist()
-#         point.time_from_start = Duration(
-#             seconds=0,
-#             nanoseconds=int(duration * 1e9)
-#         ).to_msg()
-
-#         traj.points.append(point)
-#         self.traj_pub.publish(traj)
-
-#     # ==========================================================
-#     # Shutdown safety
-#     # ==========================================================
-#     def shutdown(self):
-#         self.get_logger().info("Stopping robot safely...")
-#         self.move_to_pose(self.current_positions, duration=0.5)
-
-
-# # ==============================================================
-# # Main
-# # ==============================================================
-
-# def main():
-#     rclpy.init()
-#     node = OMXRealController()
-
-#     executor = MultiThreadedExecutor()
-#     executor.add_node(node)
-
-#     try:
-#         executor.spin()
-#     except KeyboardInterrupt:
-#         pass
-#     finally:
-#         node.shutdown()
-#         node.destroy_node()
-#         rclpy.shutdown()
-
-
-# if __name__ == '__main__':
-#     main()

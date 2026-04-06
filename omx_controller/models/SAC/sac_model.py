@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-LOG_STD_MIN = -20
+LOG_STD_MIN = -5
 LOG_STD_MAX = 2
 class SACAgent:
     def __init__(self, state_dim, action_dim):
