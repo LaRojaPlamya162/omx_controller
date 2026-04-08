@@ -71,7 +71,7 @@ files = [
     "log_20.csv"
 ]
 
-log_dir = "omx_controller/models/SAC/logs_3"
+log_dir = "omx_controller/models/SAC/logs_1"
 
 for file in files:
     path = os.path.join(log_dir, file)
@@ -84,15 +84,15 @@ for file in files:
     #plt.plot(distance, label = file)
     #plt.plot(reward, label=file)
 
-df_1 = pd.read_csv("omx_controller/models/BC/logs/log_1.csv")
-#df_2 = pd.read_csv("omx_controller/models/SAC/logs_3/log_7.csv")
-plt.plot(df_1['distance'], label = "BC")
-#plt.plot(df_2['reward'], label = "SAC")
+df_1 = pd.read_csv("omx_controller/models/BC/logs_1/log_1.csv")
+df_2 = pd.read_csv("omx_controller/models/BC/logs_1/log_3.csv")
+plt.plot(df_1['reward'], label = "hf")
+plt.plot(df_2['reward'], label = "real")
 plt.xlabel("Timestep")
-plt.ylabel("Distance")
-plt.title("Distance")
-#plt.ylabel("Reward")
-#plt.title("Reward")
+#plt.ylabel("Distance")
+#plt.title("Distance")
+plt.ylabel("Reward")
+plt.title("Reward")
 plt.legend()
 plt.grid()
 

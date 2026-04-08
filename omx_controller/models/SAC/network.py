@@ -60,17 +60,12 @@ LOG_STD_MIN = -5
 LOG_STD_MAX = 2
 
 class Actor(nn.Module):
-    def __init__(self, state_dim, action_dim, action_space=None):
+    def __init__(self, state_dim, action_dim, hidden_dim: int = 256, action_space=None):
         super().__init__()
-
-        # self.fc1 = nn.Linear(state_dim, 256)
-        # self.fc2 = nn.Linear(256, 256)
         self.backbone = nn.Sequential(
-            nn.Linear(state_dim, 256),
+            nn.Linear(state_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(256, 256),
-            nn.ReLU(),
-            nn.Linear(256, 256),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
         )
         self.mean = nn.Linear(256, action_dim)
@@ -119,15 +114,15 @@ class Actor(nn.Module):
 
         return action, log_prob, mean_action
 class Critic(nn.Module):
-    def __init__(self, state_dim, action_dim):
+    def __init__(self, state_dim, action_dim, hidden_dim: int = 256):
         super().__init__()
 
         self.net = nn.Sequential(
-            nn.Linear(state_dim + action_dim, 256),
+            nn.Linear(state_dim + action_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(256,256),
+            nn.Linear(hidden_dim,hidden_dim),
             nn.ReLU(),
-            nn.Linear(256,1)
+            nn.Linear(hidden_dim,1)
         )
 
     def forward(self, state, action):

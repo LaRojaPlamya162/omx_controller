@@ -22,6 +22,8 @@ setup(
     entry_points={
         'console_scripts': [
             'controller = omx_controller.controller:main',
+            'sac_controller = omx_controller.sac_controller:main',
+            'bc_controller = omx_controller.bc_controller:main',
             'new_controller = omx_controller.new_controller:main',
             'other_controller = omx_controller.other_controller:main'
         ],
