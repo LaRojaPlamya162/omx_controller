@@ -1,0 +1,1 @@
+episode,timestep,s1,s2,s3,s4,s5,g_s,rb_x,rb_y,rb_z,a1,a2,a3,a4,a5,g_a,ns1,ns2,ns3,ns4,ns5,ng_s,nrb_x,nrb_y,nrb_z,jp_x,jp_y,jp_z,bp_x,bp_y,bp_z,distance,reward,ball_in_target,ball_out_of_playground,time_limit,done

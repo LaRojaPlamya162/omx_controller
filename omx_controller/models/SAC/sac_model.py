@@ -1,15 +1,19 @@
-from omx_controller.models.SAC.network import Actor, Critic
+from omx_controller.models.SAC.sac_network import Actor, Critic
+from omx_controller.models.BC.bc_model import BCPolicy
+from omx_controller.components.utils import get_action_max_min
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import os
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BC_DIR = "src/omx_controller/omx_controller/models/BC"
-LOG_STD_MIN = -5
-LOG_STD_MAX = 2
+LOG_STD_MIN = -5.0
+LOG_STD_MAX = 2.0
+action_max, action_min = get_action_max_min()
 class SACAgent:
     def __init__(self, state_dim, action_dim):
-        self.actor = Actor(state_dim, action_dim)
+        #self.actor = Actor(state_dim, action_dim)
+        self.actor = Actor(state_dim, action_dim, action_min=action_min, action_max=action_max)
         self.q1 = Critic(state_dim, action_dim)
         self.q2 = Critic(state_dim, action_dim)
 
@@ -122,26 +126,13 @@ class SACAgent:
                 "log_alpha": self.log_alpha.detach().cpu(),
                 "alpha_opt": self.alpha_opt.state_dict(),
             }, path)
-            print(f"[✓] Saved to {path}")
+            #print(f"[✓] Saved to {path}")
 
     
     def load_checkpoint(self, path):
-        ckpt_bc = torch.load(os.path.join(BC_DIR, "bc_model_v2_squashed_hf.pth"), map_location=DEVICE)
+        #ckpt_bc = torch.load(os.path.join(BC_DIR, "bc_model_v2_squashed_real.pth"), map_location=DEVICE)
         ckpt = torch.load(path, map_location=DEVICE)
         self.actor.load_state_dict(ckpt["actor"])
-        
-        # self.actor.backbone.load_state_dict({
-        #     k.replace("backbone.", ""): v
-        #     for k, v in ckpt_bc.items()
-        #     if "backbone" in k
-        # })
-
-        # self.actor.mean.load_state_dict({
-        #     k.replace("mean.", ""): v
-        #     for k, v in ckpt_bc.items()
-        #     if "mean" in k
-        # })
-        #self.actor.load_state_dict(ckpt_bc['model_state_dict'])
         self.q1.load_state_dict(ckpt["q1"])
         self.q2.load_state_dict(ckpt["q2"])
         self.q1_target.load_state_dict(ckpt["q1_target"])
@@ -151,13 +142,40 @@ class SACAgent:
         self.q1_opt.load_state_dict(ckpt["q1_opt"])
         self.q2_opt.load_state_dict(ckpt["q2_opt"])
 
-        #self.log_alpha.data.copy_(ckpt["log_alpha"].to(self.device))
         self.log_alpha.data.copy_(ckpt['log_alpha'].to(DEVICE))
-        #self.log_alpha.data.copy_(ckpt["log_alpha"])
         self.alpha_opt.load_state_dict(ckpt["alpha_opt"])
 
         print(f"[✓] Loaded from {path}")
 
+def initialize_sac_from_bc(sac_agent: SACAgent, bc_checkpoint_path: str, state_dim: int, action_dim: int):
+    """
+    Load BC policy vào SAC Actor (warm-start)
+    """
+    print(f"[BC → SAC] Loading BC weights from: {bc_checkpoint_path}")
+
+    # 1. Load BC model
+    bc_model = BCPolicy(state_dim, action_dim, hidden_dim=256).to(DEVICE)
+    checkpoint = torch.load(bc_checkpoint_path, map_location=DEVICE, weights_only=True)
+    bc_model.load_state_dict(checkpoint["model_state_dict"])
+    bc_model.eval()
+
+    # 2. Copy weights sang SAC Actor (backbone + mean + log_std)
+    sac_actor = sac_agent.actor
+
+    # Copy backbone
+    sac_actor.backbone.load_state_dict(bc_model.backbone.state_dict())
+    
+    # Copy mean head
+    sac_actor.mean.load_state_dict(bc_model.mean.state_dict())
+    
+    # Copy log_std head (SAC có scaling tanh khác một chút, nhưng rất ổn để warm-start)
+    sac_actor.log_std.load_state_dict(bc_model.log_std.state_dict())
+
+    print("[✓] SAC Actor đã được initialize từ BC policy!")
+    print("    → Backbone, mean, log_std đã copy thành công")
+    print("    → SAC sẽ tiếp tục fine-tune từ policy khá tốt của BC")
+
+    return sac_agent
 
 
 

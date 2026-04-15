@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 import os
+import pandas as pd
+import numpy as np
 
 class ReplayBuffer:
     def __init__(self, state_dim, action_dim, capacity, device):
@@ -55,7 +57,7 @@ class ReplayBuffer:
         }
 
         torch.save(data, path)
-        print(f"ReplayBuffer saved to {path}")
+        #print(f"ReplayBuffer saved to {path}")
 
     # ===============================
     # LOAD BUFFER
@@ -79,3 +81,62 @@ class ReplayBuffer:
         self.size = size
 
         print(f"ReplayBuffer loaded from {path} with {self.size} samples")
+
+
+def fill_replay_buffer_from_dataframe(
+    replay_buffer: ReplayBuffer,
+    df: pd.DataFrame,
+    verbose: bool = True
+):
+    """
+    Push toàn bộ transitions từ Pandas DataFrame vào ReplayBuffer
+    
+    Giả sử DataFrame có đúng các cột như bạn liệt kê:
+        - state:   ['s1','s2','s3','s4','s5','g_s','rb_x','rb_y','rb_z']
+        - action:  ['a1','a2','a3','a4','a5','g_a']
+        - next_state tương tự
+        - reward, done
+    """
+    
+    required_cols = [
+        # State
+        's1','s2','s3','s4','s5','g_s','rb_x','rb_y','rb_z',
+        # Action
+        'a1','a2','a3','a4','a5','g_a',
+        # Next state
+        'ns1','ns2','ns3','ns4','ns5','ng_s','nrb_x','nrb_y','nrb_z',
+        # Reward & Done
+        'reward', 'done'
+    ]
+    
+    # Kiểm tra cột
+    missing = [col for col in required_cols if col not in df.columns]
+    if missing:
+        raise ValueError(f"Thiếu các cột sau trong DataFrame: {missing}")
+
+    # Chuyển sang numpy một lần cho tốc độ cao
+    states      = df[['s1','s2','s3','s4','s5','g_s','rb_x','rb_y','rb_z']].values.astype(np.float32)
+    actions     = df[['a1','a2','a3','a4','a5','g_a']].values.astype(np.float32)
+    next_states = df[['ns1','ns2','ns3','ns4','ns5','ng_s','nrb_x','nrb_y','nrb_z']].values.astype(np.float32)
+    rewards     = df['reward'].values.astype(np.float32).reshape(-1, 1)
+    dones       = df['done'].values.astype(np.float32).reshape(-1, 1)
+
+    num_transitions = len(df)
+    
+    if verbose:
+        print(f"Đang push {num_transitions:,} transitions vào ReplayBuffer...")
+
+    # Push từng transition (dùng loop nhanh với itertuples thay vì iterrows)
+    for i in range(num_transitions):
+        replay_buffer.push(
+            s   = states[i],
+            a   = actions[i],
+            r   = rewards[i],
+            s_  = next_states[i],
+            d   = dones[i]
+        )
+
+    if verbose:
+        print(f"✅ Đã push xong {replay_buffer.size:,}/{replay_buffer.capacity} transitions "
+              f"(ptr = {replay_buffer.ptr})")
+    return replay_buffer

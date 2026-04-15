@@ -10,7 +10,6 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        (os.path.join('share', package_name, 'models', 'BC'), ['omx_controller/models/BC/bc_model.pth', 'omx_controller/models/SAC/checkpoint/SAC.pth'])
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -21,11 +20,11 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'controller = omx_controller.controller:main',
             'sac_controller = omx_controller.sac_controller:main',
             'bc_controller = omx_controller.bc_controller:main',
-            'new_controller = omx_controller.new_controller:main',
-            'other_controller = omx_controller.other_controller:main'
+            'iql_controller = omx_controller.iql_controller:main',
+            'bc_to_sac_controller = omx_controller.bc_to_sac_controller:main',
+            'iql_to_sac_controller = omx_controller.iql_to_sac_controller:main'
         ],
     },
 )

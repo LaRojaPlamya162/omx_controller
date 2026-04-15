@@ -24,27 +24,21 @@ from ros_gz_interfaces.msg import Entity
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from tf2_ros import Buffer, TransformListener
-# ===== Component Lib =====
-from omx_controller.models.BC.bc_model import BCPolicy
-from omx_controller.components.reward import RewardFunction
-from omx_controller.models.SAC.network import Actor,Critic
-from omx_controller.models.SAC.sac_model import SACAgent
-from omx_controller.models.SAC.replay_buffer import ReplayBuffer
+from tf2_msgs.msg import TFMessage
+from geometry_msgs.msg import PoseArray
 
+# ===== Component Lib =====
+from omx_controller.models.SAC.sac_model import SACAgent
+from omx_controller.components.reward import RewardFunction
+from omx_controller.models.SAC.replay_buffer import ReplayBuffer
+from omx_controller.components.utils import get_action_max_min, dataset_length, create_log_file
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MODEL_DIR = "src/omx_controller/omx_controller/models/SAC/checkpoint_4"
+MODEL_DIR = "src/omx_controller/omx_controller/models/SAC"
 #LOG_PATH = "src/omx_controller/omx_controller/models/SAC/logs_2"
 class Controller(Node):
 
     def __init__(self):
         super().__init__('keyboard_controller')
-
-        # QoS profile for reliable subscriptions
-        qos = QoSProfile(
-            depth=10,
-            reliability=QoSReliabilityPolicy.RELIABLE,
-            history=QoSHistoryPolicy.KEEP_LAST
-        )
 
         # Publisher for arm joint control
         self.arm_publisher = self.create_publisher(
@@ -61,13 +55,13 @@ class Controller(Node):
             JointState, '/joint_states', self.joint_state_callback, 10
         )
 
-        # Subscriber to get ball pose
         self.ball_sub = self.create_subscription(
-            Pose,
-            '/cricket_ball/pose',
-            self.ball_callback,
-            qos
-        )
+                    PoseArray,
+                    #TFMessage,
+                    '/world/empty/pose/info',
+                    self.ball_callback,
+                    10
+                )
         # TF buffer
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -107,16 +101,15 @@ class Controller(Node):
             'joint5',
         ]
         self.gripper_position = 0.0
-        self.gripper_max = 1.1
+        self.gripper_max = 1.0
         self.gripper_min = 0.0
         #self.initial_ball_pose = [0.0, 2.0, 1.0]  # Consistent with spawn position
         self.joint_received = False
         self.initial_omx_pose = None
         self.ball_pos = [0.2, 0.2, 0.0]  # Default ball position
         self.joint_pos = None
+        self.pose_index = None
         # Control parameters
-        self.max_delta = 0.02
-        self.gripper_delta = 0.1
         self.last_command_time = time.time()
         self.command_interval = 0.02
 
@@ -127,18 +120,32 @@ class Controller(Node):
         # Logging throttle (every 1 second)
         self.last_joint_log_time = 0.0
         self.last_arm_log_time = 0.0
-        self.last_gripper_log_time = 0.0
-        self.last_ball_log_time = 0.0
         self.log_interval = 1.0
 
+        # Reward
+        self.ball_in_target_steps = 0
+        self.min_steps_in_target = 50
+        self.ball_out_of_playground_steps = 0
+        self.done = False
+        # ===== SAC =====
+        action_max, action_min = get_action_max_min()
+        self.action_min = action_min.cpu().numpy()
+        self.action_max = action_max.cpu().numpy()
         self.agent = SACAgent(state_dim = 9, action_dim = 6)
-        if os.path.exists(os.path.join(MODEL_DIR, "SAC.pth")):
-            self.agent.load_checkpoint(os.path.join(MODEL_DIR, "SAC.pth"))
-            self.get_logger().info(f"Loaded SAC.pth")
+        if os.path.exists(os.path.join(MODEL_DIR, "checkpoint_4/SAC.pth")):
+            self.agent.load_checkpoint(os.path.join(MODEL_DIR, "checkpoint_4/SAC.pth"))
+            #self.get_logger().info(f"Loaded SAC.pth")
         self.replay = ReplayBuffer(state_dim = 9, action_dim = 6, capacity = 1000000, device = DEVICE)
-        if os.path.exists(os.path.join(MODEL_DIR,"replay.pth")):
-            self.replay.load(os.path.join(MODEL_DIR, "replay.pth"))
-            self.get_logger().info(f"Loaded replay buffer")
+        if os.path.exists(os.path.join(MODEL_DIR,"checkpoint_4/replay.pth")):
+            self.replay.load(os.path.join(MODEL_DIR, "checkpoint_4/replay.pth"))
+            self.get_logger().info(f"Loaded replay buffer, len: {len(self.replay)}")
+
+        # ===== Training size ======
+        if os.path.exists(os.path.join(MODEL_DIR, "logs_4")):
+            self.training_size = dataset_length(os.path.join(MODEL_DIR, "logs_4"))
+        else:
+            self.training_size = 0
+        self.get_logger().info(f"Model has been training for {self.training_size} timesteps!")
         # Control / Logging variables
         self.prev_arm_positions = None
         self.prev_gripper_position = None
@@ -155,7 +162,6 @@ class Controller(Node):
         self.reset_state = 'none'
         self.ball_reset_in_progress = False
         self.tolerance = 0.001  # Tolerance for pose comparison
-
         self.state_mean = torch.tensor(
             [0,0,0,0,0,0,0,0,0], dtype=torch.float32, device=DEVICE
         )
@@ -163,8 +169,9 @@ class Controller(Node):
         self.state_std = torch.tensor(
             [1,1,1,1,1,1,0.3,0.3,0.3], dtype=torch.float32, device=DEVICE
         )
+
         # CSV logging
-        self.path = self.create_log_file()
+        self.path, self.index = create_log_file(os.path.join(MODEL_DIR, "logs_4"))
         self.csv_file = open(self.path, "w", newline="") #open("src/omx_controller/omx_controller/models/SAC/sac_log.csv", "w", newline="")
         self.writer = csv.writer(self.csv_file)
         self.writer.writerow([
@@ -186,9 +193,10 @@ class Controller(Node):
             'bp_x','bp_y','bp_z',
 
             # distance
-            'distance',
+            'distance','reward',
 
-            'reward','done'
+            # status
+            'ball_in_target','ball_out_of_playground', 'time_limit', 'done'
             ])
 
         # Create timer for control loop (20 Hz)
@@ -219,22 +227,30 @@ class Controller(Node):
         current_time = time.time()
         if current_time - self.last_joint_log_time >= self.log_interval:
             self.get_logger().info(
+                f'Timestep: {self.timestep}, '
                 f'Received joint states: {self.arm_joint_positions}, '
                 f'Gripper: {self.gripper_position}'
             )
             self.last_joint_log_time = current_time
-        #print("joint callback")
 
     def ball_callback(self, msg):
-        pos = msg.position
-        x, y, z = pos.x, pos.y, pos.z
-        self.ball_pos = [x, y, z]
+        if self.pose_index is None:
+            for i, pose in enumerate(msg.poses):
+                if abs(pose.position.x - 0.2) < 0.01 and abs(pose.position.y - 0.2) < 0.01:
+                #if pose.position.x == 0.2 and pose.position.y == 0.2:
+                    self.pose_index = i
+                    self.get_logger().info(f"Episode: {self.episode}, Ball pose index: {self.pose_index}")
+        else:
+            ball_pose_msg = msg.poses[self.pose_index] 
+                    
+            # Lấy tọa độ x, y, z
+            x = float(ball_pose_msg.position.x)
+            y = float(ball_pose_msg.position.y)
+            z = float(0.0) if ball_pose_msg.position.z < 0.0 else float(ball_pose_msg.position.z)
 
-        # Throttled logging
-        current_time = time.time()
-        if current_time - self.last_ball_log_time >= self.log_interval:
-            self.get_logger().info(f"Ball position: {x:.3f}, {y:.3f}, {z:.3f}")
-            self.last_ball_log_time = current_time
+            # Lưu vào self.ball_pose
+            self.ball_pos = [x, y, z]
+            #self.get_logger().info(f"Timestep {self.timestep}, Ball pos: {self.ball_pos}")
 
     def send_arm_command(self, arm_pos):
         arm_msg = JointTrajectory()
@@ -248,7 +264,7 @@ class Controller(Node):
         # Throttled logging
         current_time = time.time()
         if current_time - self.last_arm_log_time >= self.log_interval:
-            self.get_logger().info(f'Arm command sent: {arm_pos}')
+            self.get_logger().info(f'Timestep: {self.timestep}, Arm command sent: {arm_pos}')
             self.last_arm_log_time = current_time
 
     def send_gripper_command(self, gripper_pos):
@@ -269,15 +285,20 @@ class Controller(Node):
         self.gripper_client.send_goal_async(goal_msg)
 
     def control_step(self):
-        if self.timestep >= 20000:
+        if self.timestep >= 10000 or self.episode >= 20:
+            self.get_logger().info(f"Log completed")
+            exit()
+        if self.training_size + self.timestep >= 150000:
+            self.get_logger().info(f"Training completed")
             exit()
         if not self.joint_received:
             return
-
+        
         if self.initial_omx_pose is None:
             self.initial_omx_pose = self.arm_joint_positions + [self.gripper_position]
             self.get_logger().info("Initial OMX pose captured!")
 
+        #self.get_logger().info(f"Timestep {self.timestep}, ball in the bounding box for {self.ball_in_target_steps} steps, ball out of playground for {self.ball_out_of_playground_steps} steps and done: {self.done}")
         # ================= RESET STATE MACHINE =================
         if self.reset_state == 'reset_robot':
             self.reset_omx_pose()
@@ -315,7 +336,6 @@ class Controller(Node):
         self.joint_pos = ee_pos
         
         distance = np.linalg.norm(np.array(self.ball_pos) - np.array(ee_pos))
-        #self.get_logger().info(f"Distance: {distance:.4f}")
 
         # ================= BUILD CURRENT STATE (9D) =================
         relative_ball = (
@@ -323,9 +343,9 @@ class Controller(Node):
         ).tolist()
 
         current_state = (
-            self.arm_joint_positions +
-            [self.gripper_position] +
-            relative_ball
+            self.arm_joint_positions 
+            + [self.gripper_position] 
+            + relative_ball
         )
 
         # ================= REWARD =================
@@ -340,13 +360,21 @@ class Controller(Node):
             )
 
             reward = reward_fn.reward
-            done = reward_fn.done
+            if reward_fn.is_success():
+                self.ball_in_target_steps +=1
+            else:
+                self.ball_in_target_steps = 0
+            if not reward_fn.is_ball_in_playground():
+                self.ball_out_of_playground_steps += 1
+            else:
+                self.ball_out_of_playground_steps = 0
+
+            self.done = (self.ball_in_target_steps >= self.min_steps_in_target) or reward_fn.check_out_of_time() or (self.ball_out_of_playground_steps >= 5)
 
         else:
             reward = 0.0
-            done = False
-
-        # ================= PUSH REPLAY =================
+            self.done = False
+                # ================= PUSH REPLAY =================
         if self.prev_state is not None and self.prev_action is not None:
 
             # CSV log (s_t, a_t, s_t+1)
@@ -360,7 +388,10 @@ class Controller(Node):
                 self.ball_pos +
                 [distance] +
                 [reward] +
-                [done]
+                [self.ball_in_target_steps] +
+                [self.ball_out_of_playground_steps] +
+                [self.episode_step] +
+                [self.done]
             )
 
             self.writer.writerow(row)
@@ -368,41 +399,44 @@ class Controller(Node):
             if self.timestep % 50 == 0:
                 self.csv_file.flush()
 
-            # Replay push
             self.replay.push(
                 self.prev_state,
                 self.prev_action,
                 reward,
                 current_state,
-                done
+                self.done
             )
-
             self.timestep += 1
             self.episode_step += 1
             self.prev_wrist_pos = self.joint_pos.copy()
             self.prev_ball_pos = self.ball_pos.copy()
-            # Episode end
-            if done:
+            
+        # Episode end
+        if self.done:
                 self.get_logger().info("Episode done -> start reset")
+                if len(self.replay) > 0 and self.timestep > 0:
+                    self.agent.save_checkpoint(
+                        os.path.join(MODEL_DIR, "checkpoint_4/SAC.pth")
+                    )
+                    self.replay.save(os.path.join(MODEL_DIR, "checkpoint_4/replay.pth"))
+                    self.get_logger().info("Save SAC model and replay buffer")
                 self.reset_state = 'reset_robot'
                 self.resetting = True
                 self.new_episode_ready = False
                 self.episode += 1
                 self.episode_step = 0
-
                 self.prev_state = None
                 self.prev_action = None
                 self.prev_ball_pos = None
                 self.prev_wrist_pos = None
+                self.pose_index = None
+                self.ball_in_target_steps = 0
+                self.ball_out_of_playground_steps = 0
                 return
 
 
-        # state_tensor = torch.tensor(
-        #     current_state,
-        #     dtype=torch.float32,
-        #     device=DEVICE
-        # ).unsqueeze(0)
-
+        
+        # ====== INFERENCE ======
         state_tensor = torch.tensor(
             current_state,
             dtype=torch.float32,
@@ -412,42 +446,26 @@ class Controller(Node):
         state_tensor = (state_tensor - self.state_mean) / (self.state_std + 1e-6)
 
         state_tensor = state_tensor.unsqueeze(0)
-
         with torch.no_grad():
             action_tensor, _, _ = self.agent.actor.sample(state_tensor)
-
         action = action_tensor.squeeze(0).cpu().numpy()
 
         action = np.clip(action, -1.0, 1.0)
-
-
-        # ===== SCALE DELTA =====
-        max_delta = 0.05 # 0.3
-        delta = action * max_delta
-        # current_joint = np.array(self.arm_joint_positions)
-        # joint_command = current_joint + delta[:5]
-        # #gripper_command = self.gripper_position + delta[5]
-        # gripper_command = np.clip(
-        #     self.gripper_position + delta[5],
-        #     self.gripper_min,
-        #     self.gripper_max
-        # )
-
-        current_joint = np.array(self.arm_joint_positions)
-        arm_delta = action[:5] * 0.03
-        gripper_delta = action[5] * 0.1
-        joint_command = current_joint + arm_delta
+        
+        # ===== Un-normalize =====
+        real_action = self.action_min + (action + 1.0) * 0.5 * (self.action_max - self.action_min)
+        joint_command = real_action[:5]
+        gripper_command = real_action[5]
         gripper_command = np.clip(
-            self.gripper_position + gripper_delta,
+            gripper_command,
             self.gripper_min,
             self.gripper_max
         )
+        self.send_arm_command(joint_command.tolist())
+        self.send_gripper_command(float(gripper_command))
 
         # Save action (policy output)
         self.prev_action = action.tolist()
-        # Send command
-        self.send_arm_command(joint_command.tolist())
-        self.send_gripper_command(float(gripper_command))
 
         # ================= UPDATE PREV STATE =================
         self.prev_state = current_state
@@ -457,13 +475,12 @@ class Controller(Node):
             for _ in range(5):
                 self.agent.update(self.replay)
             
-        if self.timestep % 1000 == 0 and len(self.replay) > 0:
+        if self.timestep % 100 == 0 and len(self.replay) > 0 and self.timestep > 0:
             self.agent.save_checkpoint(
-                os.path.join(MODEL_DIR, "SAC.pth")
-                #"src/omx_controller/omx_controller/models/SAC/checkpoint_3/SAC.pth"
+                os.path.join(MODEL_DIR, "checkpoint_4/SAC.pth")
             )
-            self.replay.save(os.path.join(MODEL_DIR, "replay.pth"))
-            #self.replay.save("src/omx_controller/omx_controller/models/SAC/checkpoint_1/replay.pth")
+            self.replay.save(os.path.join(MODEL_DIR, "checkpoint_4/replay.pth"))
+            self.get_logger().info("Save SAC model and replay buffer")
 
     def reset_omx_pose(self):
         if self.initial_omx_pose is None:
@@ -517,9 +534,9 @@ class Controller(Node):
         with open(model_path) as f:
             spawn_req.entity_factory.sdf = f.read()
 
-        spawn_req.entity_factory.pose.position.x = self.ball_pos[0]
-        spawn_req.entity_factory.pose.position.y = self.ball_pos[1]
-        spawn_req.entity_factory.pose.position.z = self.ball_pos[2]
+        spawn_req.entity_factory.pose.position.x = float(0.2)
+        spawn_req.entity_factory.pose.position.y = float(0.2)
+        spawn_req.entity_factory.pose.position.z = float(0.0)
 
         spawn_req.entity_factory.relative_to = "world"
 
@@ -548,30 +565,9 @@ class Controller(Node):
         self.resetting = False
         self.new_episode_ready = True
         self.ball_reset_in_progress = False
-    
-    def create_log_file(self):
-        log_dir = Path("src/omx_controller/omx_controller/models/SAC/logs_4")
-        #log_dir = Path("src/omx_controller/omx_controller/models/SAC/logs")
-        log_dir.mkdir(parents=True, exist_ok=True)
-
-        existing_logs = list(log_dir.glob("log_*.csv"))
-
-        if not existing_logs:
-            next_index = 1
-        else:
-            indices = []
-            for f in existing_logs:
-                try:
-                    idx = int(f.stem.split("_")[1])
-                    indices.append(idx)
-                except:
-                    pass
-
-            next_index = max(indices) + 1
-
-        log_path = log_dir / f"log_{next_index}.csv"
-        print(f"Log path: {log_path}")
-        return log_path
+        self.done = True
+        self.ball_in_target_steps = 0
+        self.ball_out_of_playground_steps = 0
 
 def main():
     rclpy.init()
@@ -592,5 +588,7 @@ def main():
 
         node.destroy_node()
         rclpy.shutdown()
+
+    return
 if __name__ == '__main__':
     main()
