@@ -1,5 +1,6 @@
 from omx_controller.models.SAC.sac_network import Actor, Critic
 from omx_controller.models.BC.bc_model import BCPolicy
+from omx_controller.models.IQL.iql_model import IQLAgent
 from omx_controller.components.utils import get_action_max_min
 import torch
 import torch.nn as nn
@@ -147,7 +148,7 @@ class SACAgent:
 
         print(f"[✓] Loaded from {path}")
 
-def initialize_sac_from_bc(sac_agent: SACAgent, bc_checkpoint_path: str, state_dim: int, action_dim: int):
+def initialize_sac_from_bc(sac_agent: SACAgent, bc_checkpoint_path: str, state_dim: int = 9, action_dim: int = 6):
     """
     Load BC policy vào SAC Actor (warm-start)
     """
@@ -176,6 +177,50 @@ def initialize_sac_from_bc(sac_agent: SACAgent, bc_checkpoint_path: str, state_d
     print("    → SAC sẽ tiếp tục fine-tune từ policy khá tốt của BC")
 
     return sac_agent
-
-
-
+def initialize_sac_from_iql(sac: SACAgent, iql_checkpoint_path: str, state_dim:int = 9, action_dim: int = 6):
+    """
+    Load weights từ IQL checkpoint (đường dẫn) vào SAC để fine-tune.
+    - Tự động infer state_dim / action_dim từ SAC actor
+    - Tạo IQL tạm thời chỉ để load checkpoint rồi copy weights
+    - Không làm thay đổi bất kỳ thứ gì khác của SAC
+    """
+    DEVICE = next(sac.actor.parameters()).device
+    
+    # === Infer dimensions từ SAC (không cần hardcode 9/6) ===
+    # state_dim = sac.actor.backbone[0].in_features   # Linear(state_dim → hidden)
+    # action_dim = sac.actor.mean.out_features        # Linear(hidden → action_dim)
+    
+    # === Tạo IQL tạm thời và load checkpoint ===
+    iql = IQLAgent(state_dim=state_dim, action_dim=action_dim, device=DEVICE)
+    iql.load_checkpoint(iql_checkpoint_path)
+    
+    # === 1. Copy Q networks (giống hệt) ===
+    sac.q1.load_state_dict(iql.q1.state_dict())
+    sac.q2.load_state_dict(iql.q2.state_dict())
+    sac.q1_target.load_state_dict(iql.q1_target.state_dict())
+    sac.q2_target.load_state_dict(iql.q2_target.state_dict())
+    
+    # === 2. Copy Actor ← Policy (map keys vì tên layer khác nhau) ===
+    pi_dict = iql.pi.state_dict()
+    actor_dict = sac.actor.state_dict()
+    
+    # Backbone / net
+    actor_dict['backbone.0.weight'] = pi_dict['net.0.weight']
+    actor_dict['backbone.0.bias']   = pi_dict['net.0.bias']
+    actor_dict['backbone.2.weight'] = pi_dict['net.2.weight']
+    actor_dict['backbone.2.bias']   = pi_dict['net.2.bias']
+    
+    # Mean & log_std
+    actor_dict['mean.weight']      = pi_dict['mean.weight']
+    actor_dict['mean.bias']        = pi_dict['mean.bias']
+    actor_dict['log_std.weight']   = pi_dict['log_std.weight']
+    actor_dict['log_std.bias']     = pi_dict['log_std.bias']
+    
+    sac.actor.load_state_dict(actor_dict)
+    
+    # === 3. Reset alpha về giá trị hợp lý (SAC v2) ===
+    # Khởi đầu alpha ≈ 0.2 thường ổn định hơn khi fine-tune từ IQL
+    # with torch.no_grad():
+    #     sac.log_alpha.data.copy_(torch.log(torch.tensor([0.2], device=DEVICE)))
+    
+    return sac

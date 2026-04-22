@@ -65,3 +65,29 @@ def concat_dataset(files, col_names):
         dfs.append(df[col_names])
 
     return pd.concat(dfs, ignore_index=True)
+
+def get_latest_file(path):
+    """
+    Tìm file có dạng: <anything>_<number>.<ext>
+    Trả về file có number lớn nhất
+    """
+    pattern = re.compile(r"^(.*)_(\d+)(\.[^.]+)?$")
+
+    max_idx = -1
+    latest_file = None
+
+    for fname in os.listdir(path):
+        match = pattern.match(fname)
+        if match:
+            idx = int(match.group(2))
+            if idx > max_idx:
+                max_idx = idx
+                latest_file = fname
+
+    if latest_file is None:
+        return None
+
+    return os.path.join(path, latest_file)
+
+if __name__ == '__main__':
+    print(get_latest_file("omx_controller/models/BC_to_SAC/logs_1")) ## ket qua: log_17.csv 

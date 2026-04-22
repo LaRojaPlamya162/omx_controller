@@ -399,13 +399,13 @@ class Controller(Node):
             if self.timestep % 50 == 0:
                 self.csv_file.flush()
 
-            self.replay.push(
-                self.prev_state,
-                self.prev_action,
-                reward,
-                current_state,
-                self.done
-            )
+            # self.replay.push(
+            #     self.prev_state,
+            #     self.prev_action,
+            #     reward,
+            #     current_state,
+            #     self.done
+            # )
             self.timestep += 1
             self.episode_step += 1
             self.prev_wrist_pos = self.joint_pos.copy()
@@ -414,12 +414,12 @@ class Controller(Node):
         # Episode end
         if self.done:
                 self.get_logger().info("Episode done -> start reset")
-                if len(self.replay) > 0 and self.timestep > 0:
-                    self.agent.save_checkpoint(
-                        os.path.join(MODEL_DIR, "checkpoint_4/SAC.pth")
-                    )
-                    self.replay.save(os.path.join(MODEL_DIR, "checkpoint_4/replay.pth"))
-                    self.get_logger().info("Save SAC model and replay buffer")
+                # if len(self.replay) > 0 and self.timestep > 0:
+                #     self.agent.save_checkpoint(
+                #         os.path.join(MODEL_DIR, "checkpoint_4/SAC.pth")
+                #     )
+                #     self.replay.save(os.path.join(MODEL_DIR, "checkpoint_4/replay.pth"))
+                #     self.get_logger().info("Save SAC model and replay buffer")
                 self.reset_state = 'reset_robot'
                 self.resetting = True
                 self.new_episode_ready = False
@@ -471,16 +471,16 @@ class Controller(Node):
         self.prev_state = current_state
 
         # ================= TRAIN =================
-        if len(self.replay) > 10000 and self.timestep % 10 == 0:
-            for _ in range(5):
-                self.agent.update(self.replay)
+        # if len(self.replay) > 10000 and self.timestep % 10 == 0:
+        #     for _ in range(5):
+        #         self.agent.update(self.replay)
             
-        if self.timestep % 100 == 0 and len(self.replay) > 0 and self.timestep > 0:
-            self.agent.save_checkpoint(
-                os.path.join(MODEL_DIR, "checkpoint_4/SAC.pth")
-            )
-            self.replay.save(os.path.join(MODEL_DIR, "checkpoint_4/replay.pth"))
-            self.get_logger().info("Save SAC model and replay buffer")
+        # if self.timestep % 100 == 0 and len(self.replay) > 0 and self.timestep > 0:
+        #     self.agent.save_checkpoint(
+        #         os.path.join(MODEL_DIR, "checkpoint_4/SAC.pth")
+        #     )
+        #     self.replay.save(os.path.join(MODEL_DIR, "checkpoint_4/replay.pth"))
+        #     self.get_logger().info("Save SAC model and replay buffer")
 
     def reset_omx_pose(self):
         if self.initial_omx_pose is None:

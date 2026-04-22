@@ -30,20 +30,40 @@ iql_df['distance'] = pd.to_numeric(iql_df['distance'], errors='coerce')
 iql_df['reward'] = pd.to_numeric(iql_df['reward'], errors='coerce')
 ########## BC to SAC ##########
 bc_to_sac_dir = "omx_controller/models/BC_to_SAC/logs_1"
-bc_to_sac_files = [os.path.join(bc_to_sac_dir, f"log_{i}.csv") for i in range(1,8)]
+bc_to_sac_files = [os.path.join(bc_to_sac_dir, f"log_{i}.csv") for i in range(1,11)]
 bc_to_sac_df = concat_dataset(files = bc_to_sac_files, col_names=['reward', 'distance'])
 bc_to_sac_df = pd.concat([bc_df, bc_to_sac_df], ignore_index=True)
+#print(len(bc_to_sac_df['reward']))
+bc_to_sac_last_1000_df = bc_to_sac_df[-15000:]
+bc_to_sac_df = pd.concat([bc_to_sac_df, bc_to_sac_last_1000_df], ignore_index=True)
+#print(len(bc_to_sac_df['reward']))
+########## IQL to SAC ###########
+iql_to_sac_dir = "omx_controller/models/IQL_to_SAC/logs_2"
+iql_to_sac_files = [os.path.join(iql_to_sac_dir, f"log_{i}.csv") for i in range(1,14)]
+iql_to_sac_df = concat_dataset(files = iql_to_sac_files, col_names=["reward","distance"])
+iql_to_sac_df = pd.concat([iql_df,iql_to_sac_df], ignore_index=True)
 ########### Plot ###########
-#plt.plot(bc_to_sac_df["reward"])
-#plt.scatter(bc_to_sac_df['distance'], bc_to_sac_df['reward'], s= 1)
-# plt.xlabel("Distance")
-# plt.ylabel("Reward")
-# plt.title("BC to SAC")
-# plt.grid(True)
-# plt.show()  
+# plt.scatter(bc_to_sac_df['distance'], bc_to_sac_df['reward'], s= 1)
+# plt.plot(iql_to_sac_df["reward"])
+plt.plot(iql_to_sac_df['reward'])
+plt.xlabel("Timesteps")
+plt.ylabel("Reward")
+plt.title("IQL finetune SAC")
+plt.grid(True)
+plt.show()  
 ########## Stats ###########
-stats = bc_to_sac_df['reward'].describe()
-print(stats)
+# stats_iql_to_sac = iql_to_sac_df['distance'].describe()
+# print(stats_iql_to_sac)
+# stats_bc_to_sac = bc_to_sac_df['distance'].describe()
+# print(stats_bc_to_sac)
+# stats_bc = bc_df['reward'].describe()
+# print(stats_bc)
+# stats_sac = sac_df['distance'].describe()
+# print(stats_sac)
+# stats_iql = iql_df['reward'].describe()
+# print(stats_iql)
+# stats_bc_to_sac = bc_to_sac_df['distance'].describe()
+# print(stats_bc_to_sac)
 
 
 

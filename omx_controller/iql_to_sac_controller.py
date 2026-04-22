@@ -28,12 +28,13 @@ from tf2_msgs.msg import TFMessage
 from geometry_msgs.msg import PoseArray
 
 # ===== Component Lib =====
-from omx_controller.models.SAC.sac_model import SACAgent, initialize_sac_from_bc
+from omx_controller.models.SAC.sac_model import SACAgent, initialize_sac_from_iql
 from omx_controller.components.reward import RewardFunction
 from omx_controller.models.SAC.replay_buffer import ReplayBuffer, fill_replay_buffer_from_dataframe
-from omx_controller.components.utils import get_action_max_min, dataset_length, create_log_file, concat_dataset
+from omx_controller.components.utils import get_action_max_min, create_log_file, concat_dataset, get_latest_file
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MODEL_DIR = "src/omx_controller/omx_controller/models/BC_to_SAC"
+MODEL_DIR = "src/omx_controller/omx_controller/models/IQL_to_SAC"
+IQL_DIR = "src/omx_controller/omx_controller/models/IQL"
 BC_DIR = "src/omx_controller/omx_controller/models/BC"
 #LOG_PATH = "src/omx_controller/omx_controller/models/SAC/logs_2"
 class Controller(Node):
@@ -133,27 +134,29 @@ class Controller(Node):
         self.action_min = action_min.cpu().numpy()
         self.action_max = action_max.cpu().numpy()
         self.agent = SACAgent(state_dim = 9, action_dim = 6)
-        bc_checkpoint_path = os.path.join(BC_DIR,"bc_model_v2_squashed_real.pth")
-        if os.path.exists(os.path.join(MODEL_DIR, "checkpoint_1/SAC.pth")):
+        iql_checkpoint_path = os.path.join(IQL_DIR,"checkpoint_2/iql_epoch_020.pth")
+        latest_agent_file = get_latest_file(os.path.join(MODEL_DIR, "checkpoint_2/agent"))
+        if latest_agent_file:
             # Đã từng fine-tune rồi → load checkpoint (đã có weights tốt)
-            self.agent.load_checkpoint(os.path.join(MODEL_DIR, "checkpoint_1/SAC.pth"))
-            self.get_logger().info(f"✅ Loaded fine-tuned SAC checkpoint_1")
+            self.agent.load_checkpoint(latest_agent_file)
+            self.get_logger().info(f"✅ Loaded fine-tuned SAC checkpoint_2")
         else:
             # Lần đầu → initialize từ BC
-            self.agent = initialize_sac_from_bc(
+            self.agent = initialize_sac_from_iql(
                 self.agent, 
-                bc_checkpoint_path, 
+                iql_checkpoint_path, 
                 state_dim=9, 
                 action_dim=6
             )
-            self.get_logger().info(f"✅ Initialized SAC Actor from BC policy")
+            self.get_logger().info(f"✅ Initialized SAC Actor from IQL policy")
         
         # ===== Load replay buffer =====
+        latest_replay_file = get_latest_file(os.path.join(MODEL_DIR, "checkpoint_2/replay"))
         self.replay = ReplayBuffer(state_dim = 9, action_dim = 6, capacity = 1000000, device = DEVICE)
-        if os.path.exists(os.path.join(MODEL_DIR,"checkpoint_1/replay.pth")):
-            self.replay.load(os.path.join(MODEL_DIR, "checkpoint_1/replay.pth"))
+        if latest_replay_file:
+            self.replay.load(latest_replay_file)
         else:
-            # Nếu chưa có replay đã lưu → fill từ data BC
+            # Nếu chưa có replay đã lưu → fill từ data IQL
             required_fields = [
                 's1','s2','s3','s4','s5','g_s','rb_x','rb_y','rb_z',
                 'a1','a2','a3','a4','a5','g_a',
@@ -161,16 +164,14 @@ class Controller(Node):
                 'reward','done'
             ]
             
-            bc_files = [os.path.join(BC_DIR, f"logs_3/log_{i}.csv") for i in range(1, 4)]
-            self.get_logger().info(f"Đang load {len(bc_files)} file BC để warm-up replay buffer...")
-            df = concat_dataset(files=bc_files, col_names=required_fields)   # hàm của bạn
+            iql_files = [os.path.join(IQL_DIR, f"logs_2/log_{i}.csv") for i in range(2, 6)]
+            self.get_logger().info(f"Đang load {len(iql_files)} file IQL để warm-up replay buffer...")
+            df = concat_dataset(files=iql_files, col_names=required_fields)   # hàm của bạn
             fill_replay_buffer_from_dataframe(self.replay, df, verbose=True)
             self.get_logger().info(f"✅ Filled replay buffer from BC data: {len(self.replay):,} transitions")
-        if os.path.exists(os.path.join(MODEL_DIR, "logs_1")):
-            self.training_size = dataset_length(os.path.join(MODEL_DIR, "logs_1"))
-        else:
-            self.training_size = 0
-        self.get_logger().info(f"Model has been training for {len(self.replay)} timesteps!")
+        
+        self.current_idx = len(self.replay)
+        self.get_logger().info(f"Model has been training for {self.current_idx} timesteps!")
         # Control / Logging variables
         self.prev_arm_positions = None
         self.prev_gripper_position = None
@@ -189,11 +190,12 @@ class Controller(Node):
         self.tolerance = 0.001  # Tolerance for pose comparison
 
         # real world stats
+        bc_checkpoint_path = os.path.join(BC_DIR, "bc_model_v2_squashed_real.pth")
         checkpoint = torch.load(bc_checkpoint_path)
         self.state_mean = checkpoint['state_mean'].to(DEVICE)
         self.state_std = checkpoint['state_std'].to(DEVICE)
         # CSV logging
-        self.path, self.index = create_log_file(os.path.join(MODEL_DIR, "logs_1"))
+        self.path, self.index = create_log_file(os.path.join(MODEL_DIR, "logs_2"))
         self.csv_file = open(self.path, "w", newline="") #open("src/omx_controller/omx_controller/models/SAC/sac_log.csv", "w", newline="")
         self.writer = csv.writer(self.csv_file)
         self.writer.writerow([
@@ -307,15 +309,24 @@ class Controller(Node):
         self.gripper_client.send_goal_async(goal_msg)
 
     def control_step(self):
-        if self.timestep >= 10000 or self.episode >= 25:
-            self.get_logger().info(f"Log completed")
-            exit()
         if len(self.replay) >= 120000:
+            self.agent.save_checkpoint(
+                        os.path.join(MODEL_DIR, f"checkpoint_2/agent/SAC_{len(self.replay)}.pth")
+                    )
+            self.replay.save(os.path.join(MODEL_DIR, f"checkpoint_2/replay/replay_{len(self.replay)}.pth"))
             self.get_logger().info(f"Training completed")
+            exit()
+        if self.episode >= 30:
+            self.agent.save_checkpoint(
+                        os.path.join(MODEL_DIR, f"checkpoint_2/agent/SAC_{len(self.replay)}.pth")
+                    )
+            self.replay.save(os.path.join(MODEL_DIR, f"checkpoint_2/replay/replay_{len(self.replay)}.pth"))
+            self.get_logger().info(f"Log completed")
             exit()
         if not self.joint_received:
             return
-        
+        if len(self.replay) % 5000 == 0:
+            self.current_idx = len(self.replay)
         if self.initial_omx_pose is None:
             self.initial_omx_pose = self.arm_joint_positions + [self.gripper_position]
             self.get_logger().info("Initial OMX pose captured!")
@@ -438,9 +449,9 @@ class Controller(Node):
                 self.get_logger().info("Episode done -> start reset")
                 if len(self.replay) > 0 and self.timestep > 0:
                     self.agent.save_checkpoint(
-                        os.path.join(MODEL_DIR, "checkpoint_1/SAC.pth")
+                        os.path.join(MODEL_DIR, f"checkpoint_2/agent/SAC_{self.current_idx}.pth")
                     )
-                    self.replay.save(os.path.join(MODEL_DIR, "checkpoint_1/replay.pth"))
+                    self.replay.save(os.path.join(MODEL_DIR, f"checkpoint_2/replay/replay_{self.current_idx}.pth"))
                     self.get_logger().info("Save SAC model and replay buffer")
                 self.reset_state = 'reset_robot'
                 self.resetting = True
@@ -497,11 +508,11 @@ class Controller(Node):
             for _ in range(5):
                 self.agent.update(self.replay)
             
-        if self.timestep % 100 == 0 and len(self.replay) > 0 and self.timestep > 0:
+        if self.timestep % 200 == 0 and len(self.replay) > 0 and self.timestep > 0:
             self.agent.save_checkpoint(
-                os.path.join(MODEL_DIR, "checkpoint_1/SAC.pth")
-            )
-            self.replay.save(os.path.join(MODEL_DIR, "checkpoint_1/replay.pth"))
+                        os.path.join(MODEL_DIR, f"checkpoint_2/agent/SAC_{self.current_idx}.pth")
+                    )
+            self.replay.save(os.path.join(MODEL_DIR, f"checkpoint_2/replay/replay_{self.current_idx}.pth"))
             self.get_logger().info("Save SAC model and replay buffer")
 
     def reset_omx_pose(self):
@@ -588,6 +599,7 @@ class Controller(Node):
         self.new_episode_ready = True
         self.ball_reset_in_progress = False
         self.done = True
+        self.pose_index = None
         self.ball_in_target_steps = 0
         self.ball_out_of_playground_steps = 0
 
