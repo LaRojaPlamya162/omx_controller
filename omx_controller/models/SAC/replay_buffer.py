@@ -11,7 +11,7 @@ class ReplayBuffer:
         self.ptr = 0
         self.size = 0
 
-        # Pre-allocate memory (QUAN TRỌNG)
+
         self.state = np.zeros((capacity, state_dim), dtype=np.float32)
         self.action = np.zeros((capacity, action_dim), dtype=np.float32)
         self.reward = np.zeros((capacity, 1), dtype=np.float32)
@@ -31,7 +31,7 @@ class ReplayBuffer:
     def sample(self, batch_size):
         idx = np.random.randint(0, self.size, size=batch_size)
 
-        # Convert trực tiếp sang torch trên GPU
+
         return (
             torch.as_tensor(self.state[idx], device=self.device),
             torch.as_tensor(self.action[idx], device=self.device),
@@ -88,15 +88,6 @@ def fill_replay_buffer_from_dataframe(
     df: pd.DataFrame,
     verbose: bool = True
 ):
-    """
-    Push toàn bộ transitions từ Pandas DataFrame vào ReplayBuffer
-    
-    Giả sử DataFrame có đúng các cột như bạn liệt kê:
-        - state:   ['s1','s2','s3','s4','s5','g_s','rb_x','rb_y','rb_z']
-        - action:  ['a1','a2','a3','a4','a5','g_a']
-        - next_state tương tự
-        - reward, done
-    """
     
     required_cols = [
         # State
@@ -114,7 +105,6 @@ def fill_replay_buffer_from_dataframe(
     if missing:
         raise ValueError(f"Thiếu các cột sau trong DataFrame: {missing}")
 
-    # Chuyển sang numpy một lần cho tốc độ cao
     states      = df[['s1','s2','s3','s4','s5','g_s','rb_x','rb_y','rb_z']].values.astype(np.float32)
     actions     = df[['a1','a2','a3','a4','a5','g_a']].values.astype(np.float32)
     next_states = df[['ns1','ns2','ns3','ns4','ns5','ng_s','nrb_x','nrb_y','nrb_z']].values.astype(np.float32)
@@ -126,7 +116,6 @@ def fill_replay_buffer_from_dataframe(
     if verbose:
         print(f"Đang push {num_transitions:,} transitions vào ReplayBuffer...")
 
-    # Push từng transition (dùng loop nhanh với itertuples thay vì iterrows)
     for i in range(num_transitions):
         replay_buffer.push(
             s   = states[i],

@@ -67,10 +67,6 @@ def concat_dataset(files, col_names):
     return pd.concat(dfs, ignore_index=True)
 
 def get_latest_file(path):
-    """
-    Tìm file có dạng: <anything>_<number>.<ext>
-    Trả về file có number lớn nhất
-    """
     pattern = re.compile(r"^(.*)_(\d+)(\.[^.]+)?$")
 
     max_idx = -1

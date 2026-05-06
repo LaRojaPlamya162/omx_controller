@@ -63,13 +63,11 @@ class Policy(nn.Module):
         mean, log_std = self.forward(s)
         std = log_std.exp()
 
-        # a_scaled đã ở [-1, 1] → chuyển về raw space để tính Gaussian
         a_raw = torch.atanh(torch.clamp(a_scaled, -0.9999, 0.9999))
 
         dist = torch.distributions.Normal(mean, std)
         log_p = dist.log_prob(a_raw)
 
-        # Jacobian correction cho tanh
         log_p -= torch.log(1 - a_scaled.pow(2) + 1e-6)
 
         return log_p.sum(-1, keepdim=True)
@@ -85,4 +83,4 @@ class Policy(nn.Module):
                 a_raw = torch.distributions.Normal(mean, std).sample()
 
             a_scaled = torch.tanh(a_raw)
-            return a_scaled   # ← Đây là dạng bạn muốn (scaled [-1,1])
+            return a_scaled   

@@ -68,7 +68,7 @@ class Actor(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
         )
-        self.mean = nn.Linear(hidden_dim, action_dim)     # nên là hidden_dim
+        self.mean = nn.Linear(hidden_dim, action_dim)   
         self.log_std = nn.Linear(hidden_dim, action_dim)
 
         # Proper action scaling (device-safe)

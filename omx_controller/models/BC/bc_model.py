@@ -6,12 +6,11 @@ from datasets import load_dataset
 import torch.distributions as D
 from omx_controller.components.utils import get_action_max_min
 
-# ========================== CONFIG ==========================
 LOG_STD_MIN = -5.0
 LOG_STD_MAX = 2.0
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 256
-NUM_EPOCHS = 100          # bạn có thể tăng lên
+NUM_EPOCHS = 100         
 LEARNING_RATE = 1e-3
 CLIP_GRAD_NORM = 1.0
 
@@ -27,7 +26,6 @@ class BCPolicy(nn.Module):
         self.log_std = nn.Linear(hidden_dim, action_dim)
 
     def forward(self, state):
-        """Trả về mean và std TRƯỚC khi squash (raw)"""
         h = self.backbone(state)
         mean = self.mean(h)
         log_std = torch.clamp(self.log_std(h), LOG_STD_MIN, LOG_STD_MAX)
@@ -35,9 +33,7 @@ class BCPolicy(nn.Module):
         return mean, std
 
     def get_log_prob(self, state, action_norm):
-        """ 
-        action_norm: giá trị đã normalize về [-1, 1] 
-        """
+
         mean, std = self.forward(state)
         
         # Chuyển từ [-1,1] về raw space (pre-tanh)
@@ -53,7 +49,6 @@ class BCPolicy(nn.Module):
         return log_prob.sum(dim=-1)
 
     def act(self, state, deterministic=True):
-        """Inference: luôn trả về action trong khoảng [-1, 1]"""
         with torch.no_grad():
             mean, std = self.forward(state)
             
@@ -68,7 +63,6 @@ class BCPolicy(nn.Module):
 
 # ========================== UTILS ==========================
 def compute_stats(dataset):
-    """Tính mean/std cho state và action (pad thêm 3 dim = 0)"""
     states = []
     actions = []
 
@@ -171,7 +165,6 @@ if __name__ == '__main__':
     
     # print("Training hoàn tất!")
     
-    # # Tạo thư mục và lưu model
     # os.makedirs("omx_controller/models/BC", exist_ok=True)
     
     # torch.save({

@@ -46,8 +46,6 @@ class SACAgent:
         self.tau = 0.005
 
     def update(self, replay, batch_size=256):
-
-        # ReplayBuffer đã trả về tensor trên đúng device
         s, a, r, s_, d = replay.sample(batch_size)
 
         alpha = self.log_alpha.exp()
@@ -131,7 +129,6 @@ class SACAgent:
 
     
     def load_checkpoint(self, path):
-        #ckpt_bc = torch.load(os.path.join(BC_DIR, "bc_model_v2_squashed_real.pth"), map_location=DEVICE)
         ckpt = torch.load(path, map_location=DEVICE)
         self.actor.load_state_dict(ckpt["actor"])
         self.q1.load_state_dict(ckpt["q1"])
@@ -149,27 +146,22 @@ class SACAgent:
         print(f"[✓] Loaded from {path}")
 
 def initialize_sac_from_bc(sac_agent: SACAgent, bc_checkpoint_path: str, state_dim: int = 9, action_dim: int = 6):
-    """
-    Load BC policy vào SAC Actor (warm-start)
-    """
     print(f"[BC → SAC] Loading BC weights from: {bc_checkpoint_path}")
 
-    # 1. Load BC model
+
     bc_model = BCPolicy(state_dim, action_dim, hidden_dim=256).to(DEVICE)
     checkpoint = torch.load(bc_checkpoint_path, map_location=DEVICE, weights_only=True)
     bc_model.load_state_dict(checkpoint["model_state_dict"])
     bc_model.eval()
 
-    # 2. Copy weights sang SAC Actor (backbone + mean + log_std)
+
     sac_actor = sac_agent.actor
 
-    # Copy backbone
+
     sac_actor.backbone.load_state_dict(bc_model.backbone.state_dict())
     
-    # Copy mean head
     sac_actor.mean.load_state_dict(bc_model.mean.state_dict())
     
-    # Copy log_std head (SAC có scaling tanh khác một chút, nhưng rất ổn để warm-start)
     sac_actor.log_std.load_state_dict(bc_model.log_std.state_dict())
 
     print("[✓] SAC Actor đã được initialize từ BC policy!")
@@ -178,39 +170,30 @@ def initialize_sac_from_bc(sac_agent: SACAgent, bc_checkpoint_path: str, state_d
 
     return sac_agent
 def initialize_sac_from_iql(sac: SACAgent, iql_checkpoint_path: str, state_dim:int = 9, action_dim: int = 6):
-    """
-    Load weights từ IQL checkpoint (đường dẫn) vào SAC để fine-tune.
-    - Tự động infer state_dim / action_dim từ SAC actor
-    - Tạo IQL tạm thời chỉ để load checkpoint rồi copy weights
-    - Không làm thay đổi bất kỳ thứ gì khác của SAC
-    """
+
     DEVICE = next(sac.actor.parameters()).device
     
-    # === Infer dimensions từ SAC (không cần hardcode 9/6) ===
-    # state_dim = sac.actor.backbone[0].in_features   # Linear(state_dim → hidden)
-    # action_dim = sac.actor.mean.out_features        # Linear(hidden → action_dim)
-    
-    # === Tạo IQL tạm thời và load checkpoint ===
+
     iql = IQLAgent(state_dim=state_dim, action_dim=action_dim, device=DEVICE)
     iql.load_checkpoint(iql_checkpoint_path)
     
-    # === 1. Copy Q networks (giống hệt) ===
+
     sac.q1.load_state_dict(iql.q1.state_dict())
     sac.q2.load_state_dict(iql.q2.state_dict())
     sac.q1_target.load_state_dict(iql.q1_target.state_dict())
     sac.q2_target.load_state_dict(iql.q2_target.state_dict())
     
-    # === 2. Copy Actor ← Policy (map keys vì tên layer khác nhau) ===
+
     pi_dict = iql.pi.state_dict()
     actor_dict = sac.actor.state_dict()
     
-    # Backbone / net
+
     actor_dict['backbone.0.weight'] = pi_dict['net.0.weight']
     actor_dict['backbone.0.bias']   = pi_dict['net.0.bias']
     actor_dict['backbone.2.weight'] = pi_dict['net.2.weight']
     actor_dict['backbone.2.bias']   = pi_dict['net.2.bias']
     
-    # Mean & log_std
+
     actor_dict['mean.weight']      = pi_dict['mean.weight']
     actor_dict['mean.bias']        = pi_dict['mean.bias']
     actor_dict['log_std.weight']   = pi_dict['log_std.weight']
@@ -218,9 +201,5 @@ def initialize_sac_from_iql(sac: SACAgent, iql_checkpoint_path: str, state_dim:i
     
     sac.actor.load_state_dict(actor_dict)
     
-    # === 3. Reset alpha về giá trị hợp lý (SAC v2) ===
-    # Khởi đầu alpha ≈ 0.2 thường ổn định hơn khi fine-tune từ IQL
-    # with torch.no_grad():
-    #     sac.log_alpha.data.copy_(torch.log(torch.tensor([0.2], device=DEVICE)))
     
     return sac
