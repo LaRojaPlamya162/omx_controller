@@ -100,7 +100,6 @@ def fill_replay_buffer_from_dataframe(
         'reward', 'done'
     ]
     
-    # Kiểm tra cột
     missing = [col for col in required_cols if col not in df.columns]
     if missing:
         raise ValueError(f"Thiếu các cột sau trong DataFrame: {missing}")

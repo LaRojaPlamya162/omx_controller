@@ -128,7 +128,7 @@ class Controller(Node):
         self.min_steps_in_target = 50
         self.ball_out_of_playground_steps = 0
         self.done = False
-        if os.path.exists(os.path.join(MODEL_DIR, "logs_4")):
+        if os.path.exists(os.path.join(MODEL_DIR, "logs_3")):
             self.training_size = dataset_length(os.path.join(MODEL_DIR, "logs_4"))
         else:
             self.training_size = 0

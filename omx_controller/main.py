@@ -6,7 +6,7 @@ from omx_controller.components.utils import concat_dataset, dataset_length
 from omx_controller.models.SAC.replay_buffer import ReplayBuffer, fill_replay_buffer_from_dataframe
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ===== Tools =====
-# df = df[condition].index -> filter dataframe if meets condition
+# df = df[condition]-> filter dataframe if meets condition
 # indices = df[condition].index -> index of element in dataframe if meets condition
 # stats = df[(condition)].describe() -> stats of dataframe like: mean, std, max, min, ...(can be filtered by condition)
 
@@ -45,12 +45,14 @@ iql_to_sac_df = pd.concat([iql_df,iql_to_sac_df], ignore_index=True)
 ########### Plot ###########
 # plt.scatter(bc_to_sac_df['distance'], bc_to_sac_df['reward'], s= 1)
 # plt.plot(iql_to_sac_df["reward"])
-plt.plot(iql_to_sac_df['reward'])
-plt.xlabel("Timesteps")
-plt.ylabel("Reward")
-plt.title("IQL finetune SAC")
-plt.grid(True)
-plt.show()  
+# plt.plot(sac_df['distance'])
+# # plt.plot(bc_df['reward])
+# plt.xlabel("Timesteps (steps)")
+# plt.ylabel("Distances (m)")
+# # plt.ylabel("Reward (points)")
+# plt.title("BC")
+# plt.grid(True)
+# plt.show()  
 ########## Stats ###########
 # stats_iql_to_sac = iql_to_sac_df['distance'].describe()
 # print(stats_iql_to_sac)
@@ -65,12 +67,8 @@ plt.show()
 # stats_bc_to_sac = bc_to_sac_df['distance'].describe()
 # print(stats_bc_to_sac)
 
-
-
-
-
-
-
+idx = bc_to_sac_df[(bc_to_sac_df['reward'] >= 6) & (bc_to_sac_df['distance'] < 0.05)].index
+print(list(idx))
 
 
 

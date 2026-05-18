@@ -237,7 +237,6 @@ class Controller(Node):
         if self.pose_index is None:
             for i, pose in enumerate(msg.poses):
                 if abs(pose.position.x - 0.2) < 0.01 and abs(pose.position.y - 0.2) < 0.01:
-                #if pose.position.x == 0.2 and pose.position.y == 0.2:
                     self.pose_index = i
                     self.get_logger().info(f"Episode: {self.episode}, Ball pose index: {self.pose_index}")
         else:

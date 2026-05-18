@@ -105,7 +105,6 @@ class Controller(Node):
         self.gripper_position = 0.0
         self.gripper_max = 1.0
         self.gripper_min = 0.0
-        #self.initial_ball_pose = [0.0, 2.0, 1.0]  # Consistent with spawn position
         self.joint_received = False
         self.initial_omx_pose = None
         self.ball_pos = [0.2, 0.2, 0.0]  # Default ball position
@@ -137,11 +136,9 @@ class Controller(Node):
         iql_checkpoint_path = os.path.join(IQL_DIR,"checkpoint_2/iql_epoch_020.pth")
         latest_agent_file = get_latest_file(os.path.join(MODEL_DIR, "checkpoint_2/agent"))
         if latest_agent_file:
-            # Đã từng fine-tune rồi → load checkpoint (đã có weights tốt)
             self.agent.load_checkpoint(latest_agent_file)
             self.get_logger().info(f"✅ Loaded fine-tuned SAC checkpoint_2")
         else:
-            # Lần đầu → initialize từ BC
             self.agent = initialize_sac_from_iql(
                 self.agent, 
                 iql_checkpoint_path, 
@@ -156,7 +153,6 @@ class Controller(Node):
         if latest_replay_file:
             self.replay.load(latest_replay_file)
         else:
-            # Nếu chưa có replay đã lưu → fill từ data IQL
             required_fields = [
                 's1','s2','s3','s4','s5','g_s','rb_x','rb_y','rb_z',
                 'a1','a2','a3','a4','a5','g_a',
@@ -261,18 +257,15 @@ class Controller(Node):
         if self.pose_index is None:
             for i, pose in enumerate(msg.poses):
                 if abs(pose.position.x - 0.2) < 0.01 and abs(pose.position.y - 0.2) < 0.01:
-                #if pose.position.x == 0.2 and pose.position.y == 0.2:
                     self.pose_index = i
                     self.get_logger().info(f"Episode: {self.episode}, Ball pose index: {self.pose_index}")
         else:
             ball_pose_msg = msg.poses[self.pose_index] 
                     
-            # Lấy tọa độ x, y, z
             x = float(ball_pose_msg.position.x)
             y = float(ball_pose_msg.position.y)
             z = float(0.0) if ball_pose_msg.position.z < 0.0 else float(ball_pose_msg.position.z)
 
-            # Lưu vào self.ball_pose
             self.ball_pos = [x, y, z]
             #self.get_logger().info(f"Timestep {self.timestep}, Ball pos: {self.ball_pos}")
 

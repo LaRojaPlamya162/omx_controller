@@ -86,4 +86,4 @@ def get_latest_file(path):
     return os.path.join(path, latest_file)
 
 if __name__ == '__main__':
-    print(get_latest_file("omx_controller/models/BC_to_SAC/logs_1")) ## ket qua: log_17.csv 
+    print(get_latest_file("omx_controller/models/BC_to_SAC/logs_1")) 

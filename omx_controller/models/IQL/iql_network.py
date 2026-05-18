@@ -57,9 +57,6 @@ class Policy(nn.Module):
         return mean, log_std
 
     def log_prob(self, s, a_scaled):
-        """
-        a_scaled: action từ dataset đã được scale về [-1, 1]
-        """
         mean, log_std = self.forward(s)
         std = log_std.exp()
 

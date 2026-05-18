@@ -139,7 +139,6 @@ class Controller(Node):
             self.agent.load_checkpoint(os.path.join(MODEL_DIR, "checkpoint_1/SAC.pth"))
             self.get_logger().info(f"✅ Loaded fine-tuned SAC checkpoint_1")
         else:
-            # Lần đầu → initialize từ BC
             self.agent = initialize_sac_from_bc(
                 self.agent, 
                 bc_checkpoint_path, 
@@ -153,7 +152,7 @@ class Controller(Node):
         if os.path.exists(os.path.join(MODEL_DIR,"checkpoint_1/replay.pth")):
             self.replay.load(os.path.join(MODEL_DIR, "checkpoint_1/replay.pth"))
         else:
-            # Nếu chưa có replay đã lưu → fill từ data BC
+            # If not exist -> load from BC
             required_fields = [
                 's1','s2','s3','s4','s5','g_s','rb_x','rb_y','rb_z',
                 'a1','a2','a3','a4','a5','g_a',
@@ -265,12 +264,10 @@ class Controller(Node):
         else:
             ball_pose_msg = msg.poses[self.pose_index] 
                     
-            # Lấy tọa độ x, y, z
             x = float(ball_pose_msg.position.x)
             y = float(ball_pose_msg.position.y)
             z = float(0.0) if ball_pose_msg.position.z < 0.0 else float(ball_pose_msg.position.z)
 
-            # Lưu vào self.ball_pose
             self.ball_pos = [x, y, z]
             #self.get_logger().info(f"Timestep {self.timestep}, Ball pos: {self.ball_pos}")
 

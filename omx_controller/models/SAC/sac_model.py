@@ -13,7 +13,6 @@ LOG_STD_MAX = 2.0
 action_max, action_min = get_action_max_min()
 class SACAgent:
     def __init__(self, state_dim, action_dim):
-        #self.actor = Actor(state_dim, action_dim)
         self.actor = Actor(state_dim, action_dim, action_min=action_min, action_max=action_max)
         self.q1 = Critic(state_dim, action_dim)
         self.q2 = Critic(state_dim, action_dim)
@@ -125,7 +124,7 @@ class SACAgent:
                 "log_alpha": self.log_alpha.detach().cpu(),
                 "alpha_opt": self.alpha_opt.state_dict(),
             }, path)
-            #print(f"[✓] Saved to {path}")
+            print(f"[✓] Saved to {path}")
 
     
     def load_checkpoint(self, path):
@@ -164,9 +163,6 @@ def initialize_sac_from_bc(sac_agent: SACAgent, bc_checkpoint_path: str, state_d
     
     sac_actor.log_std.load_state_dict(bc_model.log_std.state_dict())
 
-    print("[✓] SAC Actor đã được initialize từ BC policy!")
-    print("    → Backbone, mean, log_std đã copy thành công")
-    print("    → SAC sẽ tiếp tục fine-tune từ policy khá tốt của BC")
 
     return sac_agent
 def initialize_sac_from_iql(sac: SACAgent, iql_checkpoint_path: str, state_dim:int = 9, action_dim: int = 6):

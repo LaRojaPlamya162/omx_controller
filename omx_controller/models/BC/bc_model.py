@@ -36,13 +36,12 @@ class BCPolicy(nn.Module):
 
         mean, std = self.forward(state)
         
-        # Chuyển từ [-1,1] về raw space (pre-tanh)
         raw_action = torch.atanh(torch.clamp(action_norm, -0.9999, 0.9999))
         
         normal = D.Normal(mean, std)
         log_prob = normal.log_prob(raw_action)
         
-        # Jacobian correction cho tanh
+        # Jacobian correction 
         squash_correction = torch.log(1 - action_norm.pow(2) + 1e-6)
         
         log_prob = log_prob - squash_correction
@@ -58,7 +57,7 @@ class BCPolicy(nn.Module):
                 normal = D.Normal(mean, std)
                 raw_action = normal.sample()
             
-            action_norm = torch.tanh(raw_action)   # ← Luôn squash về [-1, 1]
+            action_norm = torch.tanh(raw_action)   
             return action_norm
 
 # ========================== UTILS ==========================
@@ -69,7 +68,6 @@ def compute_stats(dataset):
     for i in range(len(dataset)):
         s = dataset[i]["observation.state"]
 
-        # 🔥 pad thêm 3 số 0
         pad = torch.zeros(3)
         s = torch.cat([s, pad], dim=0)
 
@@ -108,14 +106,12 @@ if __name__ == '__main__':
     action_max = actions.max(dim=0)[0]
 
     
-    # Tính normalization stats
     state_mean, state_std, _, _ = compute_stats(dataset)
     state_mean = state_mean.to(DEVICE)
     state_std = state_std.to(DEVICE)
     action_min = action_min.to(DEVICE)
     action_max = action_max.to(DEVICE)
 
-    # DataLoader
     dataloader = DataLoader(
         dataset,
         batch_size=BATCH_SIZE,
@@ -130,48 +126,47 @@ if __name__ == '__main__':
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
     
     model.train()
-    # print("Bắt đầu training Behavior Cloning (Squashed Gaussian)...")
-    #
-    # for epoch in range(NUM_EPOCHS):
-    #     total_loss = 0.0
-    #     num_batches = 0
-    #     for batch in dataloader:
-    #         state = batch["observation.state"].to(DEVICE)
-    #         action_real = batch["action"].to(DEVICE)
+    print("Bắt đầu training Behavior Cloning (Squashed Gaussian)...")
+    
+    for epoch in range(NUM_EPOCHS):
+        total_loss = 0.0
+        num_batches = 0
+        for batch in dataloader:
+            state = batch["observation.state"].to(DEVICE)
+            action_real = batch["action"].to(DEVICE)
 
-    #         # Pad state
-    #         pad = torch.zeros(state.shape[0], 3, device=DEVICE)
-    #         state = torch.cat([state, pad], dim=1)
+            # Pad state
+            pad = torch.zeros(state.shape[0], 3, device=DEVICE)
+            state = torch.cat([state, pad], dim=1)
             
-    #         # Normalize
-    #         state_norm = (state - state_mean) / state_std
+            # Normalize
+            state_norm = (state - state_mean) / state_std
             
-    #         # Min-Max normalize action về [-1, 1]
-    #         action_norm = 2.0 * (action_real - action_min) / (action_max - action_min + 1e-8) - 1.0
+            action_norm = 2.0 * (action_real - action_min) / (action_max - action_min + 1e-8) - 1.0
 
-    #         # Tính loss
-    #         log_prob = model.get_log_prob(state_norm, action_norm)
-    #         loss = -log_prob.mean()
+            # Calculate loss
+            log_prob = model.get_log_prob(state_norm, action_norm)
+            loss = -log_prob.mean()
 
-    #         optimizer.zero_grad()
-    #         loss.backward()
-    #         torch.nn.utils.clip_grad_norm_(model.parameters(), CLIP_GRAD_NORM)
-    #         optimizer.step()
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), CLIP_GRAD_NORM)
+            optimizer.step()
 
-    #         total_loss += loss.item()
-    #         num_batches += 1
-    #     avg_loss = total_loss / num_batches
-    #     print(f"Epoch {epoch+1:3d}/{NUM_EPOCHS} | Loss: {avg_loss:.6f}")
+            total_loss += loss.item()
+            num_batches += 1
+        avg_loss = total_loss / num_batches
+        print(f"Epoch {epoch+1:3d}/{NUM_EPOCHS} | Loss: {avg_loss:.6f}")
     
-    # print("Training hoàn tất!")
+    print("Training hoàn tất!")
     
-    # os.makedirs("omx_controller/models/BC", exist_ok=True)
+    os.makedirs("omx_controller/models/BC", exist_ok=True)
     
-    # torch.save({
-    #     "model_state_dict": model.state_dict(),
-    #     "state_mean": state_mean,
-    #     "state_std": state_std,
-    #     "hidden_dim": 256,
-    # }, "omx_controller/models/BC/bc_model_v2_squashed_real.pth")
-    # print("Model đã lưu tại: omx_controller/models/BC/bc_model_v2_squashed_real.pth")
+    torch.save({
+        "model_state_dict": model.state_dict(),
+        "state_mean": state_mean,
+        "state_std": state_std,
+        "hidden_dim": 256,
+    }, "omx_controller/models/BC/bc_model_v2_squashed_real.pth")
+    print("Model đã lưu tại: omx_controller/models/BC/bc_model_v2_squashed_real.pth")
     
