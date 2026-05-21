@@ -49,7 +49,7 @@ class Actor(nn.Module):
 
 
         log_prob = normal.log_prob(x_t)
-        log_prob -= torch.log(1 - y_t.pow(2)) + 1e-6
+        log_prob -= torch.log(1 - y_t.pow(2) + 1e-6)
         log_prob = log_prob.sum(1, keepdim=True)
 
         mean_action = torch.tanh(mean)
