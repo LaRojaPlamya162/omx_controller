@@ -177,7 +177,6 @@ def train_iql(iql, dataset, epochs=100, batch_size=512, log_interval=5,
             r = batch_dict["reward"]
             done = batch_dict["done"]
 
-            # Train một bước
             losses = iql.update((s, a, r, s_next, done))
 
             for k in epoch_losses:
@@ -207,7 +206,6 @@ if __name__ == "__main__":
     data_files = [
         f"omx_controller/models/SAC/logs_4/log_{i}.csv" for i in range(1, 19)
     ]
-    #data_files.extend([f"omx_controller/models/BC/logs_3/log_{i}.csv" for i in range(1,4)])
     required_fields = [
         "s1","s2","s3","s4","s5","g_s","rb_x","rb_y","rb_z",
         "a1","a2","a3","a4","a5","g_a",
@@ -216,8 +214,6 @@ if __name__ == "__main__":
     ]
     df = concat_dataset(files = data_files, col_names= required_fields)
     dataset = Dataset.from_pandas(df)
-    #dataset = load_dataset("csv", data_files=data_files, split="train")
-
     state_dim = 9
     action_dim = 6
 
@@ -232,7 +228,7 @@ if __name__ == "__main__":
     train_iql(
         iql=iql,
         dataset=dataset,
-        epochs=100,           # bạn có thể tăng lên 300-500 nếu cần
+        epochs=100,           
         batch_size=512,
         log_interval=5,
         save_dir="omx_controller/models/IQL/checkpoints_2"

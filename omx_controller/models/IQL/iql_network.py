@@ -70,7 +70,6 @@ class Policy(nn.Module):
         return log_p.sum(-1, keepdim=True)
 
     def act(self, s, deterministic=True):
-        """Trả về action đã scale về [-1, 1]"""
         with torch.no_grad():
             mean, log_std = self.forward(s)
             if deterministic:

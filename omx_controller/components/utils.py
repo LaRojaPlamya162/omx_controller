@@ -14,8 +14,6 @@ def get_action_max_min(BASE_PATH = "/root/ros2_ws/src/physical_ai_tools/docker/h
     actions = torch.stack([dataset[i]["action"] for i in range(len(dataset))])
     action_min = actions.min(dim=0)[0]
     action_max = actions.max(dim=0)[0]
-    # action_max = action_max.cpu().numpy()
-    # action_min = action_min.cpu().numpy()
     return action_max, action_min
 
 def create_log_file(path):

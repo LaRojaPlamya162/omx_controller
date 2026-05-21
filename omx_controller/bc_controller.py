@@ -104,7 +104,6 @@ class Controller(Node):
         self.gripper_position = 0.0
         self.gripper_max = 1.0
         self.gripper_min = 0.0
-        #self.initial_ball_pose = [0.0, 2.0, 1.0]  # Consistent with spawn position
         self.joint_received = False
         self.initial_omx_pose = None
         self.ball_pos = [0.2, 0.2, 0.0]  # Default ball position
@@ -160,7 +159,7 @@ class Controller(Node):
         self.ball_reset_in_progress = False
         self.tolerance = 0.001  # Tolerance for pose comparison
         self.path = self.create_log_file()
-        self.csv_file = open(self.path, "w", newline="") #open("src/omx_controller/omx_controller/models/SAC/sac_log.csv", "w", newline="")
+        self.csv_file = open(self.path, "w", newline="") 
         self.writer = csv.writer(self.csv_file)
         self.writer.writerow([
             'episode','timestep',
@@ -225,18 +224,15 @@ class Controller(Node):
         if self.pose_index is None:
             for i, pose in enumerate(msg.poses):
                 if abs(pose.position.x - 0.2) < 0.01 and abs(pose.position.y - 0.2) < 0.01:
-                #if pose.position.x == 0.2 and pose.position.y == 0.2:
                     self.pose_index = i
                     #self.get_logger().info(f"Episode: {self.episode},Ball pose index: {self.pose_index}")
         else:
             ball_pose_msg = msg.poses[self.pose_index] 
                     
-            # Lấy tọa độ x, y, z
             x = float(ball_pose_msg.position.x)
             y = float(ball_pose_msg.position.y)
             z = float(0.0) if ball_pose_msg.position.z < 0.0 else float(ball_pose_msg.position.z)
 
-            # Lưu vào self.ball_pose
             self.ball_pos = [x, y, z]
             #self.get_logger().info(f"Timestep {self.timestep}, Ball pos: {self.ball_pos}")
 
