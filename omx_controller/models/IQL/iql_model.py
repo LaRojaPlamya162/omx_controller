@@ -74,7 +74,7 @@ class IQLAgent:
 
         with torch.no_grad():
             adv = torch.min(self.q1(s, a), self.q2(s, a)) - self.v(s)
-            weights = torch.exp(adv / self.beta).clamp(max=100.0)
+            weights = torch.exp(adv * self.beta).clamp(max=100.0)
 
         log_prob = self.pi.log_prob(s, a)        
         pi_loss = -(weights * log_prob).mean()
