@@ -134,7 +134,7 @@ class Controller(Node):
         # ===== IQL =====
         checkpoint = torch.load("src/omx_controller/omx_controller/models/BC/bc_model_v2_squashed_real.pth", map_location=DEVICE)
         self.iql = IQLAgent(state_dim=9, action_dim=6, device=DEVICE)
-        self.iql.load_checkpoint(os.path.join(MODEL_DIR, "checkpoints_2/iql_epoch_020.pth"))
+        self.iql.load_checkpoint(os.path.join(MODEL_DIR, "checkpoint_2/iql_epoch_020.pth"))
         action_max, action_min = get_action_max_min()
         self.action_min = action_min.cpu().numpy()
         self.action_max = action_max.cpu().numpy()

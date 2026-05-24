@@ -137,7 +137,7 @@ class Controller(Node):
         if os.path.exists(os.path.join(MODEL_DIR, "checkpoint_1/SAC.pth")):
             # Đã từng fine-tune rồi → load checkpoint (đã có weights tốt)
             self.agent.load_checkpoint(os.path.join(MODEL_DIR, "checkpoint_1/SAC.pth"))
-            self.get_logger().info(f"✅ Loaded fine-tuned SAC checkpoint_1")
+            self.get_logger().info(f"Loaded fine-tuned SAC checkpoint_1")
         else:
             self.agent = initialize_sac_from_bc(
                 self.agent, 
@@ -145,7 +145,7 @@ class Controller(Node):
                 state_dim=9, 
                 action_dim=6
             )
-            self.get_logger().info(f"✅ Initialized SAC Actor from BC policy")
+            self.get_logger().info(f"Initialized SAC Actor from BC policy")
         
         # ===== Load replay buffer =====
         self.replay = ReplayBuffer(state_dim = 9, action_dim = 6, capacity = 1000000, device = DEVICE)
@@ -162,7 +162,7 @@ class Controller(Node):
             
             bc_files = [os.path.join(BC_DIR, f"logs_3/log_{i}.csv") for i in range(1, 4)]
             self.get_logger().info(f"Đang load {len(bc_files)} file BC để warm-up replay buffer...")
-            df = concat_dataset(files=bc_files, col_names=required_fields)   # hàm của bạn
+            df = concat_dataset(files=bc_files, col_names=required_fields)   
             fill_replay_buffer_from_dataframe(self.replay, df, verbose=True)
             self.get_logger().info(f"✅ Filled replay buffer from BC data: {len(self.replay):,} transitions")
         if os.path.exists(os.path.join(MODEL_DIR, "logs_1")):

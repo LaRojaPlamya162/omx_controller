@@ -119,7 +119,7 @@ class IQLAgent:
         self.v.load_state_dict(checkpoint["v"])
         self.pi.load_state_dict(checkpoint["pi"])
 
-        # Set eval mode (quan trọng cho inference)
+        # Set eval mode 
         self.q1.eval()
         self.q2.eval()
         self.q1_target.eval()
@@ -127,7 +127,7 @@ class IQLAgent:
         self.v.eval()
         self.pi.eval()
 
-        print(f"[✓] Loaded IQL checkpoint from {path}")
+        print(f"Loaded IQL checkpoint from {path}")
 
 # =========================
 # Training Function
@@ -147,13 +147,12 @@ def train_iql(iql, dataset, epochs=100, batch_size=512, log_interval=5,
         drop_last=True
     )
 
-    print(f"🚀 Bắt đầu train IQL | Dataset size: {len(dataset)} | Epochs: {epochs}\n")
+    print(f"Bắt đầu train IQL | Dataset size: {len(dataset)} | Epochs: {epochs}\n")
 
     for epoch in range(epochs):
         epoch_losses = {"v_loss": 0.0, "q_loss": 0.0, "pi_loss": 0.0}
 
         for batch_dict in dataloader:
-            # ==================== Xây dựng batch ====================
             # State 9D (đã scale)
             s = torch.stack([
                 batch_dict["s1"], batch_dict["s2"], batch_dict["s3"],
@@ -161,13 +160,11 @@ def train_iql(iql, dataset, epochs=100, batch_size=512, log_interval=5,
                 batch_dict["rb_x"], batch_dict["rb_y"], batch_dict["rb_z"]
             ], dim=1)
 
-            # Action 6D - PHẢI LÀ SCALED ACTION [-1, 1]
             a = torch.stack([
                 batch_dict["a1"], batch_dict["a2"], batch_dict["a3"],
                 batch_dict["a4"], batch_dict["a5"], batch_dict["g_a"]
             ], dim=1)
 
-            # Next state 9D
             s_next = torch.stack([
                 batch_dict["ns1"], batch_dict["ns2"], batch_dict["ns3"],
                 batch_dict["ns4"], batch_dict["ns5"], batch_dict["ng_s"],
@@ -198,7 +195,7 @@ def train_iql(iql, dataset, epochs=100, batch_size=512, log_interval=5,
             iql.save_checkpoint(f"{save_dir}/iql_epoch_{epoch+1:03d}.pth")
 
     iql.save_checkpoint(f"{save_dir}/iql_final.pth")
-    print("\n=== 🎉 Training IQL hoàn tất ===")
+    print("\n=== Training IQL hoàn tất ===")
 
 
 if __name__ == "__main__":
@@ -221,10 +218,8 @@ if __name__ == "__main__":
     print(f"Action dim: {action_dim}")
     print(f"Dataset size: {len(dataset)}\n")
 
-    # Khởi tạo IQL
     iql = IQLAgent(state_dim, action_dim, DEVICE)
 
-    # Bắt đầu training
     train_iql(
         iql=iql,
         dataset=dataset,

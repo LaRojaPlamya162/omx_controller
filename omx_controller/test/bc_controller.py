@@ -127,7 +127,7 @@ class Controller(Node):
         self.min_steps_in_target = 50
         self.ball_out_of_playground_steps = 0
         self.done = False
-        if os.path.exists(os.path.join(MODEL_DIR, "logs_3")):
+        if os.path.exists(os.path.join(MODEL_DIR, "logs_4")):
             self.training_size = dataset_length(os.path.join(MODEL_DIR, "logs_4"))
         else:
             self.training_size = 0
@@ -524,7 +524,7 @@ class Controller(Node):
         self.ball_in_target_steps = 0
         self.ball_out_of_playground_steps = 0
     def create_log_file(self):
-        log_dir = Path("src/omx_controller/omx_controller/models/BC/logs_4")
+        log_dir = Path("src/omx_controller/omx_controller/models/BC/logs_test")
         log_dir.mkdir(parents=True, exist_ok=True)
 
         existing_logs = list(log_dir.glob("log_*.csv"))

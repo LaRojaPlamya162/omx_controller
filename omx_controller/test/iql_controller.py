@@ -28,13 +28,11 @@ from tf2_msgs.msg import TFMessage
 from geometry_msgs.msg import PoseArray
 
 # ===== Component Lib =====
-from omx_controller.models.BC.bc_model import BCPolicy
 from omx_controller.components.reward import RewardFunction
-from omx_controller.models.SAC.sac_network import Actor,Critic
-from omx_controller.models.SAC.replay_buffer import ReplayBuffer
 from omx_controller.components.utils import get_action_max_min, dataset_length
+from omx_controller.models.IQL.iql_model import IQLAgent
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MODEL_DIR = "src/omx_controller/omx_controller/models/BC"
+MODEL_DIR = "src/omx_controller/omx_controller/models/IQL"
 #LOG_PATH = "src/omx_controller/omx_controller/models/SAC/logs_2"
 class Controller(Node):
 
@@ -104,6 +102,7 @@ class Controller(Node):
         self.gripper_position = 0.0
         self.gripper_max = 1.0
         self.gripper_min = 0.0
+        #self.initial_ball_pose = [0.0, 2.0, 1.0]  # Consistent with spawn position
         self.joint_received = False
         self.initial_omx_pose = None
         self.ball_pos = [0.2, 0.2, 0.0]  # Default ball position
@@ -127,21 +126,21 @@ class Controller(Node):
         self.min_steps_in_target = 50
         self.ball_out_of_playground_steps = 0
         self.done = False
-        if os.path.exists(os.path.join(MODEL_DIR, "logs_3")):
-            self.training_size = dataset_length(os.path.join(MODEL_DIR, "logs_4"))
+        if os.path.exists(os.path.join(MODEL_DIR, "logs_test")):
+            self.training_size = dataset_length(os.path.join(MODEL_DIR, "logs_test"))
         else:
             self.training_size = 0
         self.get_logger().info(f"Model has been training for {self.training_size} timesteps!")
-        # ===== BC =====
-        checkpoint = torch.load(os.path.join(MODEL_DIR, "bc_model_v2_squashed_real.pth"), map_location=DEVICE)
-        self.bc_model = BCPolicy(state_dim=9, action_dim=6).to(DEVICE)
-        self.bc_model.load_state_dict(checkpoint["model_state_dict"])
-        self.bc_model.eval()
-        self.state_mean = checkpoint["state_mean"].to(DEVICE)
-        self.state_std = checkpoint["state_std"].to(DEVICE)
+        # ===== IQL =====
+        checkpoint = torch.load("src/omx_controller/omx_controller/models/BC/bc_model_v2_squashed_real.pth", map_location=DEVICE)
+        self.iql = IQLAgent(state_dim=9, action_dim=6, device=DEVICE)
+        self.iql.load_checkpoint(os.path.join(MODEL_DIR, "checkpoint_test/iql_epoch_020.pth"))
         action_max, action_min = get_action_max_min()
         self.action_min = action_min.cpu().numpy()
         self.action_max = action_max.cpu().numpy()
+        self.state_mean = checkpoint["state_mean"].to(DEVICE)
+        self.state_std = checkpoint["state_std"].to(DEVICE)
+        
         # Control / Logging variables
         self.prev_arm_positions = None
         self.prev_gripper_position = None
@@ -159,7 +158,7 @@ class Controller(Node):
         self.ball_reset_in_progress = False
         self.tolerance = 0.001  # Tolerance for pose comparison
         self.path = self.create_log_file()
-        self.csv_file = open(self.path, "w", newline="") 
+        self.csv_file = open(self.path, "w", newline="")
         self.writer = csv.writer(self.csv_file)
         self.writer.writerow([
             'episode','timestep',
@@ -182,7 +181,6 @@ class Controller(Node):
             # metrics
             'distance', 'reward',
             
-            # status
             # status
             'ball_in_target','ball_out_of_playground', 'time_limit', 'done'
             ])
@@ -269,7 +267,7 @@ class Controller(Node):
         self.gripper_client.send_goal_async(goal_msg)
 
     def control_step(self):
-        if self.training_size + self.timestep >= 30000:
+        if self.training_size + self.timestep >= 40000:
             exit()
         if self.timestep >= 10000:
             exit()
@@ -350,7 +348,7 @@ class Controller(Node):
             else:
                 self.ball_out_of_playground_steps = 0
 
-            self.done = (self.ball_in_target_steps >= self.min_steps_in_target) or reward_fn.check_out_of_time() or (self.ball_out_of_playground_steps >= self.min_steps_in_target)
+            self.done = (self.ball_in_target_steps >= self.min_steps_in_target) or reward_fn.check_out_of_time() or (self.ball_out_of_playground_steps >= 5)
 
         else:
             reward = 0.0
@@ -414,7 +412,7 @@ class Controller(Node):
 
         state_tensor = state_tensor.unsqueeze(0)
         with torch.no_grad():
-            action_tensor = self.bc_model.act(state_tensor)
+            action_tensor = self.iql.pi.act(state_tensor, deterministic=True)
         action = action_tensor.squeeze(0).cpu().numpy()
 
         action = np.clip(action, -1.0, 1.0)
@@ -524,7 +522,7 @@ class Controller(Node):
         self.ball_in_target_steps = 0
         self.ball_out_of_playground_steps = 0
     def create_log_file(self):
-        log_dir = Path("src/omx_controller/omx_controller/models/BC/logs_4")
+        log_dir = Path("src/omx_controller/omx_controller/models/IQL/logs_3")
         log_dir.mkdir(parents=True, exist_ok=True)
 
         existing_logs = list(log_dir.glob("log_*.csv"))

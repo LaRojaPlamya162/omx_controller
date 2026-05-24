@@ -36,7 +36,6 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MODEL_DIR = "src/omx_controller/omx_controller/models/IQL_to_SAC"
 IQL_DIR = "src/omx_controller/omx_controller/models/IQL"
 BC_DIR = "src/omx_controller/omx_controller/models/BC"
-#LOG_PATH = "src/omx_controller/omx_controller/models/SAC/logs_2"
 class Controller(Node):
 
     def __init__(self):
@@ -137,7 +136,7 @@ class Controller(Node):
         latest_agent_file = get_latest_file(os.path.join(MODEL_DIR, "checkpoint_2/agent"))
         if latest_agent_file:
             self.agent.load_checkpoint(latest_agent_file)
-            self.get_logger().info(f"✅ Loaded fine-tuned SAC checkpoint_2")
+            self.get_logger().info(f"Loaded fine-tuned SAC checkpoint_2")
         else:
             self.agent = initialize_sac_from_iql(
                 self.agent, 
@@ -145,7 +144,7 @@ class Controller(Node):
                 state_dim=9, 
                 action_dim=6
             )
-            self.get_logger().info(f"✅ Initialized SAC Actor from IQL policy")
+            self.get_logger().info(f"Initialized SAC Actor from IQL policy")
         
         # ===== Load replay buffer =====
         latest_replay_file = get_latest_file(os.path.join(MODEL_DIR, "checkpoint_2/replay"))
@@ -160,7 +159,7 @@ class Controller(Node):
                 'reward','done'
             ]
             
-            iql_files = [os.path.join(IQL_DIR, f"logs_2/log_{i}.csv") for i in range(2, 6)]
+            iql_files = [os.path.join(IQL_DIR, f"logs_2/log_{i}.csv") for i in range(1, 4)]
             self.get_logger().info(f"Đang load {len(iql_files)} file IQL để warm-up replay buffer...")
             df = concat_dataset(files=iql_files, col_names=required_fields)   # hàm của bạn
             fill_replay_buffer_from_dataframe(self.replay, df, verbose=True)

@@ -19,8 +19,6 @@ class Actor(nn.Module):
 
         # Proper action scaling (device-safe)
         if action_min is not None and action_max is not None:
-            # Scale = (Max - Min) / 2
-            # Bias = (Max + Min) / 2
             action_scale = (action_max - action_min) / 2.0
             action_bias = (action_max + action_min) / 2.0
         else:

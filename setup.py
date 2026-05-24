@@ -24,7 +24,12 @@ setup(
             'bc_controller = omx_controller.bc_controller:main',
             'iql_controller = omx_controller.iql_controller:main',
             'bc_to_sac_controller = omx_controller.bc_to_sac_controller:main',
-            'iql_to_sac_controller = omx_controller.iql_to_sac_controller:main'
+            'iql_to_sac_controller = omx_controller.iql_to_sac_controller:main',
+            'sac_test_controller = omx_controller.test.sac_controller:main',
+            'bc_test_controller = omx_controller.test.bc_controller:main',
+            'iql_test_controller = omx_controller.test.iql_controller:main',
+            'bc_to_sac_test_controller = omx_controller.test.bc_to_sac_controller:main',
+            'iql_to_sac_test_controller = omx_controller.test.iql_to_sac_controller:main',
         ],
     },
 )
