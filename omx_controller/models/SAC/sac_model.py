@@ -124,7 +124,7 @@ class SACAgent:
                 "log_alpha": self.log_alpha.detach().cpu(),
                 "alpha_opt": self.alpha_opt.state_dict(),
             }, path)
-            print(f"[✓] Saved to {path}")
+            print(f"Saved to {path}")
 
     
     def load_checkpoint(self, path):
@@ -142,10 +142,10 @@ class SACAgent:
         self.log_alpha.data.copy_(ckpt['log_alpha'].to(DEVICE))
         self.alpha_opt.load_state_dict(ckpt["alpha_opt"])
 
-        print(f"[✓] Loaded from {path}")
+        print(f"Loaded from {path}")
 
 def initialize_sac_from_bc(sac_agent: SACAgent, bc_checkpoint_path: str, state_dim: int = 9, action_dim: int = 6):
-    print(f"[BC → SAC] Loading BC weights from: {bc_checkpoint_path}")
+    print(f"Loading BC weights from: {bc_checkpoint_path}")
 
 
     bc_model = BCPolicy(state_dim, action_dim, hidden_dim=256).to(DEVICE)

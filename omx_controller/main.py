@@ -24,7 +24,7 @@ bc_files = [os.path.join(bc_dir, f"log_{i}.csv") for i in range(1,4)]
 bc_df = concat_dataset(files = bc_files, col_names = ["reward", "distance"])
 ########## IQL ##########
 iql_dir = "omx_controller/models/IQL/logs_2"
-iql_files = [os.path.join(iql_dir, f"log_{i}.csv") for i in range(2,6)]
+iql_files = [os.path.join(iql_dir, f"log_{i}.csv") for i in range(1,4)]
 iql_df = concat_dataset(files = iql_files, col_names=["reward", "distance"])
 iql_df['distance'] = pd.to_numeric(iql_df['distance'], errors='coerce')
 iql_df['reward'] = pd.to_numeric(iql_df['reward'], errors='coerce')
@@ -44,15 +44,15 @@ iql_to_sac_df = concat_dataset(files = iql_to_sac_files, col_names=["reward","di
 iql_to_sac_df = pd.concat([iql_df,iql_to_sac_df], ignore_index=True)
 ########### Plot ###########
 # plt.scatter(bc_to_sac_df['distance'], bc_to_sac_df['reward'], s= 1)
-# plt.plot(iql_to_sac_df["reward"])
+plt.plot(iql_to_sac_df["distance"])
 # plt.plot(sac_df['distance'])
-# # plt.plot(bc_df['reward])
-# plt.xlabel("Timesteps (steps)")
-# plt.ylabel("Distances (m)")
-# # plt.ylabel("Reward (points)")
-# plt.title("BC")
-# plt.grid(True)
-# plt.show()  
+# plt.plot(bc_df['reward])
+plt.xlabel("Timesteps (steps)")
+plt.ylabel("Distances (m)")
+# plt.ylabel("Reward (points)")
+plt.title("IQL to SAC")
+plt.grid(True)
+plt.show()  
 ########## Stats ###########
 # stats_iql_to_sac = iql_to_sac_df['distance'].describe()
 # print(stats_iql_to_sac)
@@ -67,8 +67,8 @@ iql_to_sac_df = pd.concat([iql_df,iql_to_sac_df], ignore_index=True)
 # stats_bc_to_sac = bc_to_sac_df['distance'].describe()
 # print(stats_bc_to_sac)
 
-idx = bc_to_sac_df[(bc_to_sac_df['reward'] >= 6) & (bc_to_sac_df['distance'] < 0.05)].index
-print(list(idx))
+# idx = bc_to_sac_df[(bc_to_sac_df['reward'] >= 6) & (bc_to_sac_df['distance'] < 0.05)].index
+# print(list(idx))
 
 
 

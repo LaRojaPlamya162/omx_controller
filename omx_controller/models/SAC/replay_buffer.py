@@ -31,7 +31,6 @@ class ReplayBuffer:
     def sample(self, batch_size):
         idx = np.random.randint(0, self.size, size=batch_size)
 
-
         return (
             torch.as_tensor(self.state[idx], device=self.device),
             torch.as_tensor(self.action[idx], device=self.device),

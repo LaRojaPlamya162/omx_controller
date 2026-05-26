@@ -71,7 +71,8 @@ class IQLAgent:
         self.q_optimizer.zero_grad()
         q_loss.backward()
         self.q_optimizer.step()
-
+        
+        # 3. Update Policy
         with torch.no_grad():
             adv = torch.min(self.q1(s, a), self.q2(s, a)) - self.v(s)
             weights = torch.exp(adv * self.beta).clamp(max=100.0)
@@ -103,7 +104,7 @@ class IQLAgent:
             "v": self.v.state_dict(), "pi": self.pi.state_dict(),
         }
         torch.save(checkpoint, path)
-        print(f"[✓] Saved at: {path}")
+        print(f"Saved at: {path}")
 
     def load_checkpoint(self, path):
         if not os.path.exists(path):
@@ -153,7 +154,6 @@ def train_iql(iql, dataset, epochs=100, batch_size=512, log_interval=5,
         epoch_losses = {"v_loss": 0.0, "q_loss": 0.0, "pi_loss": 0.0}
 
         for batch_dict in dataloader:
-            # State 9D (đã scale)
             s = torch.stack([
                 batch_dict["s1"], batch_dict["s2"], batch_dict["s3"],
                 batch_dict["s4"], batch_dict["s5"], batch_dict["g_s"],
@@ -226,5 +226,5 @@ if __name__ == "__main__":
         epochs=100,           
         batch_size=512,
         log_interval=5,
-        save_dir="omx_controller/models/IQL/checkpoints_2"
+        save_dir="omx_controller/models/IQL/checkpoint_test"
     )

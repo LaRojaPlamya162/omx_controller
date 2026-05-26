@@ -522,7 +522,7 @@ class Controller(Node):
         self.ball_in_target_steps = 0
         self.ball_out_of_playground_steps = 0
     def create_log_file(self):
-        log_dir = Path("src/omx_controller/omx_controller/models/IQL/logs_2")
+        log_dir = Path("src/omx_controller/omx_controller/models/IQL/logs_3")
         log_dir.mkdir(parents=True, exist_ok=True)
 
         existing_logs = list(log_dir.glob("log_*.csv"))

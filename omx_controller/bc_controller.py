@@ -350,7 +350,7 @@ class Controller(Node):
             else:
                 self.ball_out_of_playground_steps = 0
 
-            self.done = (self.ball_in_target_steps >= self.min_steps_in_target) or reward_fn.check_out_of_time() or (self.ball_out_of_playground_steps >= self.min_steps_in_target)
+            self.done = (self.ball_in_target_steps >= self.min_steps_in_target) or reward_fn.check_out_of_time() or (self.ball_out_of_playground_steps >= 5)
 
         else:
             reward = 0.0

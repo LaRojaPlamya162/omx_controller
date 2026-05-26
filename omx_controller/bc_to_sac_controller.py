@@ -489,7 +489,7 @@ class Controller(Node):
         # ================= UPDATE PREV STATE =================
         self.prev_state = current_state
 
-        # ================= TRAIN =================
+        # # ================= TRAIN =================
         if len(self.replay) > 10000 and self.timestep % 10 == 0:
             for _ in range(5):
                 self.agent.update(self.replay)

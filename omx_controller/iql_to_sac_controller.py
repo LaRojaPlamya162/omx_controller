@@ -496,16 +496,16 @@ class Controller(Node):
         self.prev_state = current_state
 
         # ================= TRAIN =================
-        if len(self.replay) > 10000 and self.timestep % 10 == 0:
-            for _ in range(5):
-                self.agent.update(self.replay)
+        # if len(self.replay) > 10000 and self.timestep % 10 == 0:
+        #     for _ in range(5):
+        #         self.agent.update(self.replay)
             
-        if self.timestep % 200 == 0 and len(self.replay) > 0 and self.timestep > 0:
-            self.agent.save_checkpoint(
-                        os.path.join(MODEL_DIR, f"checkpoint_2/agent/SAC_{self.current_idx}.pth")
-                    )
-            self.replay.save(os.path.join(MODEL_DIR, f"checkpoint_2/replay/replay_{self.current_idx}.pth"))
-            self.get_logger().info("Save SAC model and replay buffer")
+        # if self.timestep % 200 == 0 and len(self.replay) > 0 and self.timestep > 0:
+        #     self.agent.save_checkpoint(
+        #                 os.path.join(MODEL_DIR, f"checkpoint_2/agent/SAC_{self.current_idx}.pth")
+        #             )
+        #     self.replay.save(os.path.join(MODEL_DIR, f"checkpoint_2/replay/replay_{self.current_idx}.pth"))
+        #     self.get_logger().info("Save SAC model and replay buffer")
 
     def reset_omx_pose(self):
         if self.initial_omx_pose is None:

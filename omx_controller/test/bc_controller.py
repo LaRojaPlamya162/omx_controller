@@ -350,7 +350,7 @@ class Controller(Node):
             else:
                 self.ball_out_of_playground_steps = 0
 
-            self.done = (self.ball_in_target_steps >= self.min_steps_in_target) or reward_fn.check_out_of_time() or (self.ball_out_of_playground_steps >= self.min_steps_in_target)
+            self.done = (self.ball_in_target_steps >= self.min_steps_in_target) or reward_fn.check_out_of_time() or (self.ball_out_of_playground_steps >= 5)
 
         else:
             reward = 0.0
@@ -375,10 +375,10 @@ class Controller(Node):
                 [self.done]
             )
 
-            self.writer.writerow(row)
+            # self.writer.writerow(row)
 
-            if self.timestep % 50 == 0:
-                self.csv_file.flush()
+            # if self.timestep % 50 == 0:
+            #     self.csv_file.flush()
             self.timestep += 1
             self.episode_step += 1
             self.prev_wrist_pos = self.joint_pos.copy()
